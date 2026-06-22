@@ -52,6 +52,20 @@ contract ProofOfReserves is ZamaEthereumConfig {
         uint256 attestationCount;
     }
 
+    /**
+     * @notice A fraud challenge: a whistleblower asserts the exchange signed two
+     *         ciphertexts that encrypt DIFFERENT values for the same customer in
+     *         the same epoch. The "differ" bit is computed under FHE so neither
+     *         balance is revealed; only the 1-bit inequality result is public.
+     */
+    struct FraudChallenge {
+        address challenger;
+        address customer;
+        ebool encryptedDiffer; // FHE.ne(encA, encB)
+        bool fulfilled; // public decryption callback completed
+        bool fraudProven; // fulfilled AND differ == true
+    }
+
     /// @notice On-chain admin that creates epochs (hot wallet).
     address public immutable exchangeAdmin;
     /// @notice Off-chain key that signs each balance attestation (cold key).
@@ -63,10 +77,20 @@ contract ProofOfReserves is ZamaEthereumConfig {
     /// @notice Prevents the same (epoch, customer, ciphertext) from being submitted twice.
     mapping(bytes32 => bool) public attestationUsed;
 
+    /// @notice Open fraud challenges, keyed by keccak256(abi.encodePacked(epochId, customer)).
+    mapping(bytes32 => FraudChallenge) private _challenges;
+
+    /// @notice An epoch flagged fraudulent via a successful challenge. Its solvency
+    ///         result is then considered invalid.
+    mapping(uint256 => bool) public epochFraudulent;
+
     event EpochCreated(uint256 indexed epochId, uint64 claimedLiabilities, uint64 deadline);
     event AttestationRegistered(uint256 indexed epochId, address indexed customer, bytes32 indexed attHash);
     event RevealRequested(uint256 indexed epochId, address indexed revealer);
     event PublicDecryptionFulfilled(uint256 indexed epochId, uint64 revealedTotal, bool solvent);
+    event ChallengeSubmitted(uint256 indexed epochId, address indexed customer, address indexed challenger);
+    event FraudProven(uint256 indexed epochId, address indexed customer, address indexed challenger);
+    event ChallengeRejected(uint256 indexed epochId, address indexed customer);
 
     error EpochNotFound();
     error EpochNotOpen();
@@ -74,6 +98,7 @@ contract ProofOfReserves is ZamaEthereumConfig {
     error NotRevealed();
     error NotFulfilled();
     error AlreadyFulfilled();
+    error AlreadyChallenged();
     error AttestationAlreadyUsed();
     error InvalidSignature();
     error NotExchangeAdmin();
@@ -99,11 +124,10 @@ contract ProofOfReserves is ZamaEthereumConfig {
      * @notice Publish a new attestation window. Only the exchange admin may do this,
      *         since `claimedLiabilities` is the exchange's own solvency claim.
      */
-    function createEpoch(uint64 claimedLiabilities, uint64 windowSeconds)
-        external
-        onlyExchangeAdmin
-        returns (uint256 epochId)
-    {
+    function createEpoch(
+        uint64 claimedLiabilities,
+        uint64 windowSeconds
+    ) external onlyExchangeAdmin returns (uint256 epochId) {
         unchecked {
             epochId = nextEpochId;
             ++nextEpochId;
@@ -223,10 +247,112 @@ contract ProofOfReserves is ZamaEthereumConfig {
     }
 
     // -------------------------------------------------------------------------------------------
+    // Fraud challenges (conflicting-attestation proof)
+    // -------------------------------------------------------------------------------------------
+
+    /**
+     * @notice Submit a fraud challenge: the customer asserts the exchange signed
+     *         two ciphertexts encrypting DIFFERENT values for them in one epoch.
+     *
+     *         The contract verifies BOTH exchange signatures, materializes both
+     *         ciphertexts on-chain (the FHEVM input proof is bound to
+     *         `msg.sender`, so only the aggrieved customer can do this — a
+     *         privacy feature), and computes the encrypted inequality bit
+     *         `differ = FHE.ne(encA, encB)`. That bit is marked publicly
+     *         decryptable; `fulfillChallenge()` reveals whether the values truly
+     *         differ (fraud) or coincide (re-encryption, not fraud).
+     *
+     * @dev ACL discipline (AGENTS.md rule 2): the two challenge ciphertexts receive
+     *      `allowThis` ONLY — never decryptable. Only the 1-bit `differ` result is
+     *      ever revealed. Neither balance leaks, even during a challenge.
+     */
+    function challengeConflictingAttestation(
+        uint256 epochId,
+        externalEuint64 ciphertextA,
+        bytes calldata proofA,
+        bytes calldata signatureA,
+        externalEuint64 ciphertextB,
+        bytes calldata proofB,
+        bytes calldata signatureB
+    ) external {
+        Epoch storage e = _epochs[epochId];
+        if (e.deadline == 0) revert EpochNotFound();
+        address customer = msg.sender;
+
+        bytes32 key = keccak256(abi.encodePacked(epochId, customer));
+        if (_challenges[key].challenger != address(0)) revert AlreadyChallenged();
+
+        // Verify both signatures bind (epochId, customer, ciphertext, deadline).
+        bytes32 ethA = MessageHashUtils.toEthSignedMessageHash(
+            _hashAttestation(epochId, customer, ciphertextA, e.deadline)
+        );
+        bytes32 ethB = MessageHashUtils.toEthSignedMessageHash(
+            _hashAttestation(epochId, customer, ciphertextB, e.deadline)
+        );
+        if (ethA.recover(signatureA) != exchangeSigner) revert InvalidSignature();
+        if (ethB.recover(signatureB) != exchangeSigner) revert InvalidSignature();
+
+        // Materialize both ciphertexts on-chain (contract-only ACL).
+        euint64 encA = FHE.fromExternal(ciphertextA, proofA);
+        FHE.allowThis(encA);
+        euint64 encB = FHE.fromExternal(ciphertextB, proofB);
+        FHE.allowThis(encB);
+
+        // Encrypted inequality. Same value (re-encryption) -> false. Different -> true (fraud).
+        ebool differ = FHE.ne(encA, encB);
+        FHE.makePubliclyDecryptable(differ);
+
+        _challenges[key] = FraudChallenge({
+            challenger: msg.sender,
+            customer: customer,
+            encryptedDiffer: differ,
+            fulfilled: false,
+            fraudProven: false
+        });
+
+        emit ChallengeSubmitted(epochId, customer, msg.sender);
+    }
+
+    /**
+     * @notice Public-decryption callback for a challenge: reveals the `differ` bit.
+     *         If true, the exchange signed two distinct balances for one customer
+     *         in one epoch → the epoch is flagged fraudulent on-chain.
+     */
+    function fulfillChallenge(
+        uint256 epochId,
+        address customer,
+        bytes32[] calldata handlesList,
+        bytes calldata abiEncodedCleartexts,
+        bytes calldata decryptionProof
+    ) external {
+        bytes32 key = keccak256(abi.encodePacked(epochId, customer));
+        FraudChallenge storage c = _challenges[key];
+        if (c.challenger == address(0)) revert EpochNotFound();
+        if (c.fulfilled) revert AlreadyFulfilled();
+
+        bytes32 differHandle = ebool.unwrap(c.encryptedDiffer);
+        if (handlesList.length != 1 || handlesList[0] != differHandle) revert HandleMismatch();
+
+        FHE.checkSignatures(handlesList, abiEncodedCleartexts, decryptionProof);
+        bool differ = abi.decode(abiEncodedCleartexts, (bool));
+
+        c.fulfilled = true;
+        if (differ) {
+            c.fraudProven = true;
+            epochFraudulent[epochId] = true;
+            emit FraudProven(epochId, customer, c.challenger);
+        } else {
+            emit ChallengeRejected(epochId, customer);
+        }
+    }
+
+    // -------------------------------------------------------------------------------------------
     // Views
     // -------------------------------------------------------------------------------------------
 
-    function getEpoch(uint256 epochId)
+    function getEpoch(
+        uint256 epochId
+    )
         external
         view
         returns (
@@ -262,6 +388,22 @@ contract ProofOfReserves is ZamaEthereumConfig {
     function isSolvent(uint256 epochId) external view returns (bool) {
         if (!_epochs[epochId].fulfilled) revert NotFulfilled();
         return _epochs[epochId].solvent;
+    }
+
+    function isFraudulent(uint256 epochId) external view returns (bool) {
+        return epochFraudulent[epochId];
+    }
+
+    function getChallenge(
+        uint256 epochId,
+        address customer
+    ) external view returns (address challenger, bool fulfilled, bool fraudProven) {
+        FraudChallenge storage c = _challenges[keccak256(abi.encodePacked(epochId, customer))];
+        return (c.challenger, c.fulfilled, c.fraudProven);
+    }
+
+    function getChallengeDifferHandle(uint256 epochId, address customer) external view returns (ebool) {
+        return _challenges[keccak256(abi.encodePacked(epochId, customer))].encryptedDiffer;
     }
 
     // -------------------------------------------------------------------------------------------

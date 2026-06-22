@@ -66,6 +66,9 @@ const config: HardhatUserConfig = {
   solidity: {
     version: "0.8.27",
     settings: {
+      // via-ir helps avoid "stack too deep" in FHE-heavy functions (many local
+      // ciphertexts / params) and is generally recommended for fhevm contracts.
+      viaIR: true,
       metadata: {
         // Not including the metadata hash
         // https://github.com/paulrberg/hardhat-template/issues/31

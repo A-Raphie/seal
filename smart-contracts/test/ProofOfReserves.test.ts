@@ -60,12 +60,13 @@ describe("ProofOfReserves", function () {
     return { por, porAddr };
   }
 
-  async function createEpoch(liabilities: bigint, window = EPOCH_WINDOW): Promise<{ epochId: bigint; deadline: bigint }> {
+  async function createEpoch(
+    liabilities: bigint,
+    window = EPOCH_WINDOW,
+  ): Promise<{ epochId: bigint; deadline: bigint }> {
     const tx = await por.connect(s.admin).createEpoch(liabilities, window);
     const receipt = await tx.wait();
-    const event = receipt!.logs
-      .map((l) => por.interface.parseLog(l))
-      .find((p) => p && p.name === "EpochCreated");
+    const event = receipt!.logs.map((l) => por.interface.parseLog(l)).find((p) => p && p.name === "EpochCreated");
     const epochId = event!.args.epochId;
     const deadline = event!.args.deadline;
     return { epochId, deadline };
@@ -75,19 +76,13 @@ describe("ProofOfReserves", function () {
    * Encrypts `balance`, signs the attestation as the exchange, and submits on-chain
    * as `submitter` (usually the customer themselves).
    */
-  async function submitAttestation(
-    epochId: bigint,
-    deadline: bigint,
-    customer: HardhatEthersSigner,
-    balance: bigint,
-  ) {
-    const enc = await fhevm
-      .createEncryptedInput(porAddr, customer.address)
-      .add64(balance)
-      .encrypt();
+  async function submitAttestation(epochId: bigint, deadline: bigint, customer: HardhatEthersSigner, balance: bigint) {
+    const enc = await fhevm.createEncryptedInput(porAddr, customer.address).add64(balance).encrypt();
     const handleBytes32 = enc.handles[0];
     const signature = await signAttestation(s.exchangeSigner, epochId, customer.address, handleBytes32, deadline);
-    const tx = await por.connect(customer).registerAttestation(epochId, handleBytes32, ethers.hexlify(enc.inputProof), signature);
+    const tx = await por
+      .connect(customer)
+      .registerAttestation(epochId, handleBytes32, ethers.hexlify(enc.inputProof), signature);
     await tx.wait();
     return { handleBytes32, signature };
   }
@@ -149,12 +144,14 @@ describe("ProofOfReserves", function () {
 
       // Drive the on-chain callback — verifies KMS sigs, stores plaintext result.
       await expect(
-        por.connect(s.nobody).fulfillPublicDecryption(
-          epochId,
-          [totalHandle, solventHandle],
-          result.abiEncodedClearValues,
-          result.decryptionProof,
-        ),
+        por
+          .connect(s.nobody)
+          .fulfillPublicDecryption(
+            epochId,
+            [totalHandle, solventHandle],
+            result.abiEncodedClearValues,
+            result.decryptionProof,
+          ),
       ).to.emit(por, "PublicDecryptionFulfilled");
 
       const final = await por.getEpoch(epochId);
@@ -183,7 +180,12 @@ describe("ProofOfReserves", function () {
       const solventHandle = ethers.hexlify(await por.getEncryptedSolvent(epochId));
       const result = await fhevm.publicDecrypt([totalHandle, solventHandle]);
 
-      await por.fulfillPublicDecryption(epochId, [totalHandle, solventHandle], result.abiEncodedClearValues, result.decryptionProof);
+      await por.fulfillPublicDecryption(
+        epochId,
+        [totalHandle, solventHandle],
+        result.abiEncodedClearValues,
+        result.decryptionProof,
+      );
 
       expect((await por.getEpoch(epochId)).revealedTotal).to.eq(300n);
       expect(await por.isSolvent(epochId)).to.eq(false);
@@ -255,9 +257,19 @@ describe("ProofOfReserves", function () {
       const solventHandle = ethers.hexlify(await por.getEncryptedSolvent(epochId));
       const result = await fhevm.publicDecrypt([totalHandle, solventHandle]);
 
-      await por.fulfillPublicDecryption(epochId, [totalHandle, solventHandle], result.abiEncodedClearValues, result.decryptionProof);
+      await por.fulfillPublicDecryption(
+        epochId,
+        [totalHandle, solventHandle],
+        result.abiEncodedClearValues,
+        result.decryptionProof,
+      );
       await expect(
-        por.fulfillPublicDecryption(epochId, [totalHandle, solventHandle], result.abiEncodedClearValues, result.decryptionProof),
+        por.fulfillPublicDecryption(
+          epochId,
+          [totalHandle, solventHandle],
+          result.abiEncodedClearValues,
+          result.decryptionProof,
+        ),
       ).to.be.revertedWithCustomError(por, "AlreadyFulfilled");
     });
 
@@ -288,6 +300,162 @@ describe("ProofOfReserves", function () {
       await submitAttestation(b.epochId, b.deadline, s.customer2, 600n);
       expect((await por.getEpoch(a.epochId)).attestationCount).to.eq(1n);
       expect((await por.getEpoch(b.epochId)).attestationCount).to.eq(1n);
+    });
+  });
+
+  describe("fraud challenge path", () => {
+    beforeEach(async () => {
+      await deployFixture();
+    });
+
+    // Build an attestation payload (ciphertext + proof + exchange signature) without submitting.
+    async function makePayload(customer: HardhatEthersSigner, balance: bigint, epochId: bigint, deadline: bigint) {
+      const enc = await fhevm.createEncryptedInput(porAddr, customer.address).add64(balance).encrypt();
+      const signature = await signAttestation(s.exchangeSigner, epochId, customer.address, enc.handles[0], deadline);
+      return {
+        handle: ethers.hexlify(enc.handles[0]),
+        inputProof: ethers.hexlify(enc.inputProof),
+        signature,
+      };
+    }
+
+    it("proves fraud when the exchange signs two DIFFERENT balances for one customer", async () => {
+      const { epochId, deadline } = await createEpoch(1000n);
+      const a = await makePayload(s.customer1, 100n, epochId, deadline);
+      const b = await makePayload(s.customer1, 999n, epochId, deadline); // conflicting balance
+
+      await expect(
+        por
+          .connect(s.customer1)
+          .challengeConflictingAttestation(
+            epochId,
+            a.handle,
+            a.inputProof,
+            a.signature,
+            b.handle,
+            b.inputProof,
+            b.signature,
+          ),
+      )
+        .to.emit(por, "ChallengeSubmitted")
+        .withArgs(epochId, s.customer1.address, s.customer1.address);
+
+      // Public-decrypt the 1-bit "differ" result.
+      const differHandle = ethers.hexlify(await por.getChallengeDifferHandle(epochId, s.customer1.address));
+      const result = await fhevm.publicDecrypt([differHandle]);
+
+      await expect(
+        por
+          .connect(s.nobody)
+          .fulfillChallenge(
+            epochId,
+            s.customer1.address,
+            [differHandle],
+            result.abiEncodedClearValues,
+            result.decryptionProof,
+          ),
+      )
+        .to.emit(por, "FraudProven")
+        .withArgs(epochId, s.customer1.address, s.customer1.address);
+
+      const ch = await por.getChallenge(epochId, s.customer1.address);
+      expect(ch.fraudProven).to.eq(true);
+      expect(ch.fulfilled).to.eq(true);
+      expect(await por.isFraudulent(epochId)).to.eq(true);
+    });
+
+    it("rejects the challenge when both ciphertexts encrypt the SAME value (re-encryption)", async () => {
+      const { epochId, deadline } = await createEpoch(1000n);
+      // Same balance, two independent encryptions -> distinct ciphertexts, same plaintext.
+      const a = await makePayload(s.customer1, 500n, epochId, deadline);
+      const b = await makePayload(s.customer1, 500n, epochId, deadline);
+      expect(a.handle).to.not.eq(b.handle, "sanity: ciphertexts should differ");
+
+      await por
+        .connect(s.customer1)
+        .challengeConflictingAttestation(
+          epochId,
+          a.handle,
+          a.inputProof,
+          a.signature,
+          b.handle,
+          b.inputProof,
+          b.signature,
+        );
+
+      const differHandle = ethers.hexlify(await por.getChallengeDifferHandle(epochId, s.customer1.address));
+      const result = await fhevm.publicDecrypt([differHandle]);
+
+      await expect(
+        por.fulfillChallenge(
+          epochId,
+          s.customer1.address,
+          [differHandle],
+          result.abiEncodedClearValues,
+          result.decryptionProof,
+        ),
+      )
+        .to.emit(por, "ChallengeRejected")
+        .withArgs(epochId, s.customer1.address);
+
+      const ch = await por.getChallenge(epochId, s.customer1.address);
+      expect(ch.fraudProven).to.eq(false);
+      expect(ch.fulfilled).to.eq(true);
+      expect(await por.isFraudulent(epochId)).to.eq(false);
+    });
+
+    it("rejects a challenge with a non-exchange signature", async () => {
+      const { epochId, deadline } = await createEpoch(1000n);
+      const a = await makePayload(s.customer1, 100n, epochId, deadline);
+      // Forge a second payload signed by the wrong key.
+      const enc = await fhevm.createEncryptedInput(porAddr, s.customer1.address).add64(200n).encrypt();
+      const badSig = await signAttestation(s.customer2, epochId, s.customer1.address, enc.handles[0], deadline);
+
+      await expect(
+        por
+          .connect(s.customer1)
+          .challengeConflictingAttestation(
+            epochId,
+            a.handle,
+            a.inputProof,
+            a.signature,
+            ethers.hexlify(enc.handles[0]),
+            ethers.hexlify(enc.inputProof),
+            badSig,
+          ),
+      ).to.be.revertedWithCustomError(por, "InvalidSignature");
+    });
+
+    it("cannot challenge the same (epoch, customer) twice", async () => {
+      const { epochId, deadline } = await createEpoch(1000n);
+      const a = await makePayload(s.customer1, 100n, epochId, deadline);
+      const b = await makePayload(s.customer1, 200n, epochId, deadline);
+
+      await por
+        .connect(s.customer1)
+        .challengeConflictingAttestation(
+          epochId,
+          a.handle,
+          a.inputProof,
+          a.signature,
+          b.handle,
+          b.inputProof,
+          b.signature,
+        );
+
+      await expect(
+        por
+          .connect(s.customer1)
+          .challengeConflictingAttestation(
+            epochId,
+            a.handle,
+            a.inputProof,
+            a.signature,
+            b.handle,
+            b.inputProof,
+            b.signature,
+          ),
+      ).to.be.revertedWithCustomError(por, "AlreadyChallenged");
     });
   });
 });
