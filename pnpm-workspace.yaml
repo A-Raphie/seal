@@ -2,8 +2,16 @@ packages:
   - "smart-contracts"
   - "packages/*"
 allowBuilds:
+  bufferutil: true
   keccak: true
   secp256k1: true
+  sharp: true
+  unrs-resolver: true
+  utf-8-validate: true
 onlyBuiltDependencies:
   - keccak
   - secp256k1
+  - sharp
+  - bufferutil
+  - utf-8-validate
+  - unrs-resolver
