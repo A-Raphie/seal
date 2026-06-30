@@ -9,6 +9,7 @@ import { NetworkGuard } from "@/components/NetworkGuard";
 import { TxLink } from "@/components/TxLink";
 import { ErrorText } from "@/components/ErrorText";
 import { UndeployedBanner } from "@/components/UndeployedBanner";
+import { LockIcon, AlertIcon } from "@/components/icons";
 import { proofOfReservesABI } from "@/lib/abi";
 import { PROOF_OF_RESERVES_ADDRESS, IS_UNDEPLOYED } from "@/lib/contract";
 import { friendlyError } from "@/lib/errors";
@@ -108,97 +109,120 @@ export default function CustomerPage() {
 
   return (
     <Shell>
-      <h1 className="mb-1 text-2xl font-bold">Customer</h1>
-      <p className="mb-6 text-muted">
-        Submit your encrypted balance attestation. Your balance is encrypted in
-        your browser and is <strong>never</strong> decryptable by anyone — it is
-        only homomorphically summed.
-      </p>
+      <header className="mb-6">
+        <h1 className="text-3xl font-bold">Customer</h1>
+        <p className="mt-1.5 max-w-2xl text-muted">
+          Submit your encrypted balance attestation. Your balance is encrypted in
+          your browser and is <strong className="text-foreground">never</strong>{" "}
+          decryptable by anyone — it is only homomorphically summed.
+        </p>
+      </header>
 
       {IS_UNDEPLOYED && <UndeployedBanner />}
 
-      <div className="card max-w-xl">
-        <NetworkGuard>
-          {!isConnected ? (
-            <p className="text-sm text-muted">Connect your wallet to continue.</p>
-          ) : (
-            <div className="space-y-3">
-              <div>
-                <label className="label" htmlFor={epochIdInput}>
-                  Epoch id
-                </label>
-                <input
-                  id={epochIdInput}
-                  className="input"
-                  type="text"
-                  inputMode="numeric"
-                  value={epochId}
-                  onChange={(e) => setEpochId(e.target.value)}
-                />
-              </div>
-              <div className="flex flex-wrap gap-4 text-xs text-muted" aria-live="polite">
-                <span>
-                  deadline:{" "}
-                  <span className="font-mono">
-                    {deadline === 0n
-                      ? "—"
-                      : new Date(Number(deadline) * 1000).toLocaleString()}
+      <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+        {/* Submit attestation */}
+        <div className="card">
+          <h2 className="mb-1 flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+            <span className="flex h-5 w-5 items-center justify-center rounded-full bg-accent/15 text-xs font-bold text-accent">
+              1
+            </span>
+            Submit your balance
+          </h2>
+          <NetworkGuard>
+            {!isConnected ? (
+              <p className="mt-4 text-sm text-muted">Connect your wallet to continue.</p>
+            ) : (
+              <div className="mt-4 space-y-4">
+                <div>
+                  <label className="label" htmlFor={epochIdInput}>
+                    Epoch id
+                  </label>
+                  <input
+                    id={epochIdInput}
+                    className="input font-mono"
+                    type="text"
+                    inputMode="numeric"
+                    value={epochId}
+                    onChange={(e) => setEpochId(e.target.value)}
+                  />
+                </div>
+                <div className="flex flex-wrap gap-4 text-xs" aria-live="polite">
+                  <span className="text-muted">
+                    deadline:{" "}
+                    <span className="font-mono text-foreground">
+                      {deadline === 0n
+                        ? "—"
+                        : new Date(Number(deadline) * 1000).toLocaleString()}
+                    </span>
                   </span>
-                </span>
-                <span>
-                  status:{" "}
-                  {deadline === 0n ? (
-                    "no epoch"
-                  ) : open ? (
-                    <span className="text-success">open</span>
-                  ) : (
-                    <span className="text-warning">closed</span>
+                  <span className="text-muted">
+                    status:{" "}
+                    {deadline === 0n ? (
+                      "no epoch"
+                    ) : open ? (
+                      <span className="text-success">open</span>
+                    ) : (
+                      <span className="text-warning">closed</span>
+                    )}
+                  </span>
+                </div>
+                <div>
+                  <label className="label" htmlFor={balanceInput}>
+                    Your balance (units)
+                  </label>
+                  <input
+                    id={balanceInput}
+                    className="input font-mono"
+                    type="text"
+                    inputMode="numeric"
+                    placeholder="e.g. 4200"
+                    value={balance}
+                    onChange={(e) => setBalance(e.target.value)}
+                    aria-invalid={balance.length > 0 && !balanceValid}
+                  />
+                  <p className="mt-1.5 flex items-center gap-1.5 text-xs text-accent">
+                    <LockIcon aria-hidden /> Encrypted in your browser before it
+                    leaves this device.
+                  </p>
+                  {balance.length > 0 && !balanceValid && (
+                    <p className="mt-1 text-xs text-danger">
+                      Enter a whole, non-negative number.
+                    </p>
                   )}
-                </span>
-              </div>
-              <div>
-                <label className="label" htmlFor={balanceInput}>
-                  Your balance (units)
-                </label>
-                <input
-                  id={balanceInput}
-                  className="input"
-                  type="text"
-                  inputMode="numeric"
-                  placeholder="e.g. 4200"
-                  value={balance}
-                  onChange={(e) => setBalance(e.target.value)}
-                  aria-invalid={balance.length > 0 && !balanceValid}
-                />
-                {balance.length > 0 && !balanceValid && (
-                  <p className="mt-1 text-xs text-danger">
-                    Enter a whole, non-negative number.
+                </div>
+                <button className="btn-primary w-full" disabled={!canSubmit} onClick={handleSubmit}>
+                  {isEncrypting ? "Encrypting…" : isPending ? "Submitting…" : "Submit attestation"}
+                </button>
+                {status && (
+                  <p className="text-xs text-success" aria-live="polite">
+                    Submitted ✓ <TxLink value={status} type="tx" />
                   </p>
                 )}
+                <ErrorText error={error} />
               </div>
-              <button className="btn-primary w-full" disabled={!canSubmit} onClick={handleSubmit}>
-                {isEncrypting ? "Encrypting…" : isPending ? "Submitting…" : "Submit attestation"}
-              </button>
-              {status && (
-                <p className="text-xs text-success" aria-live="polite">
-                  Submitted ✓ <TxLink value={status} type="tx" />
-                </p>
-              )}
-              <ErrorText error={error} />
-            </div>
-          )}
-        </NetworkGuard>
-      </div>
+            )}
+          </NetworkGuard>
+        </div>
 
-      <div className="card mt-6 max-w-xl">
-        <h2 className="mb-3 font-semibold">Fraud challenge</h2>
-        <NetworkGuard>
-          {isConnected ? (
-            <ChallengeForm epochId={epochId} deadline={deadline} />
-          ) : (
-            <p className="text-sm text-muted">Connect your wallet to file a challenge.</p>
-          )}
-        </NetworkGuard>
+        {/* Fraud challenge */}
+        <div className="card rail-danger">
+          <h2 className="mb-1 flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+            <AlertIcon className="text-base text-danger" aria-hidden />
+            Fraud challenge
+          </h2>
+          <p className="mb-3 text-xs text-muted-foreground">
+            If the exchange signed two different balances for you, prove it
+            on-chain — revealing only a 1-bit &ldquo;they differ&rdquo; flag.
+          </p>
+          <NetworkGuard>
+            {isConnected ? (
+              <ChallengeForm epochId={epochId} deadline={deadline} />
+            ) : (
+              <p className="text-sm text-muted">Connect your wallet to file a challenge.</p>
+            )}
+          </NetworkGuard>
+        </div>
       </div>
     </Shell>
   );

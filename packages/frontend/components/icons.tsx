@@ -106,6 +106,26 @@ export function MenuIcon(props: IconProps) {
   );
 }
 
+/** Homomorphic-sum node (Σ) — used in the hero flow diagram. */
+export function SigmaIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M7 5h10l-6 7 6 7H7" />
+    </Svg>
+  );
+}
+
+/** Auditor gate / key — the composable-privacy credential symbol. */
+export function KeyIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <circle cx="8" cy="8" r="3.5" />
+      <path d="M10.5 10.5L20 20" />
+      <path d="M16 16l2.5-2.5M18 18l2.5-2.5" />
+    </Svg>
+  );
+}
+
 /**
  * The product mark: a shield + lock with a small ciphertext glyph — the
  * visual metaphor for "encrypted solvency". Used in the header wordmark and
@@ -126,23 +146,23 @@ export function Logo({ size = 24, ...props }: IconProps & { size?: number }) {
       {/* shield */}
       <path
         d="M16 3l11 4.5v8c0 6.5-4.6 11.8-11 13.5C9.6 27.3 5 22 5 15.5v-8L16 3z"
-        fill="#0F1437"
-        stroke="#FFD700"
+        fill="#0D0F1A"
+        stroke="#7C5CFF"
         strokeWidth="1.5"
       />
       {/* padlock body */}
-      <rect x="11" y="15" width="10" height="7.5" rx="1.4" fill="#FFD700" />
+      <rect x="11" y="15" width="10" height="7.5" rx="1.4" fill="#7C5CFF" />
       {/* shackle */}
       <path
         d="M13 15v-2.2a3 3 0 0 1 6 0V15"
         fill="none"
-        stroke="#FFD700"
+        stroke="#7C5CFF"
         strokeWidth="1.5"
       />
       {/* ciphertext dot row inside the lock */}
-      <circle cx="13.5" cy="18.7" r="0.9" fill="#0A0E27" />
-      <circle cx="16" cy="18.7" r="0.9" fill="#0A0E27" />
-      <circle cx="18.5" cy="18.7" r="0.9" fill="#0A0E27" />
+      <circle cx="13.5" cy="18.7" r="0.9" fill="#0D0F1A" />
+      <circle cx="16" cy="18.7" r="0.9" fill="#0D0F1A" />
+      <circle cx="18.5" cy="18.7" r="0.9" fill="#0D0F1A" />
     </svg>
   );
 }
