@@ -1,11 +1,17 @@
 "use client";
 
-import { useState } from "react";
+import { useId, useState } from "react";
 import { useAccount, useReadContract, useWriteContract } from "wagmi";
-import { parseEther } from "viem";
 import { Shell } from "@/components/Shell";
+import { NetworkGuard } from "@/components/NetworkGuard";
+import { TxLink } from "@/components/TxLink";
+import { ErrorText } from "@/components/ErrorText";
+import { CheckIcon } from "@/components/icons";
+import { UndeployedBanner } from "@/components/UndeployedBanner";
 import { proofOfReservesABI } from "@/lib/abi";
-import { PROOF_OF_RESERVES_ADDRESS } from "@/lib/contract";
+import { PROOF_OF_RESERVES_ADDRESS, IS_UNDEPLOYED } from "@/lib/contract";
+import { friendlyError } from "@/lib/errors";
+import { isValidUint } from "@/lib/parse";
 
 export default function ExchangePage() {
   const { address, isConnected } = useAccount();
@@ -14,6 +20,9 @@ export default function ExchangePage() {
   const [windowSeconds, setWindowSeconds] = useState("3600");
   const [txHash, setTxHash] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const liabId = useId();
+  const windowId = useId();
 
   const { data: nextEpochId } = useReadContract({
     address: PROOF_OF_RESERVES_ADDRESS,
@@ -35,110 +44,150 @@ export default function ExchangePage() {
 
   const isAdmin = !!address && admin === address;
 
+  // Live validation — disables submit instead of throwing on bad input.
+  const liabValid = isValidUint(liabilities);
+  const windowValid = isValidUint(windowSeconds);
+  const canSubmit = liabValid && windowValid && !isPending;
+
   async function handleCreate() {
+    if (!liabValid || !windowValid) return;
     setError(null);
     setTxHash(null);
     try {
-      const liab = BigInt(liabilities);
-      const window = BigInt(windowSeconds);
       const hash = await writeContractAsync({
         address: PROOF_OF_RESERVES_ADDRESS,
         abi: proofOfReservesABI,
         functionName: "createEpoch",
-        args: [liab, window],
+        args: [BigInt(liabilities), BigInt(windowSeconds)],
       });
       setTxHash(hash);
       setLiabilities("");
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(friendlyError(e));
     }
   }
 
   return (
     <Shell>
       <h1 className="mb-1 text-2xl font-bold">Exchange back-office</h1>
-      <p className="mb-6 text-white/50">
+      <p className="mb-6 text-muted">
         Open an attestation epoch and publish the liabilities claim.
       </p>
+
+      {IS_UNDEPLOYED && <UndeployedBanner />}
 
       <div className="grid gap-4 md:grid-cols-2">
         <div className="card">
           <h2 className="mb-3 font-semibold">Contract state</h2>
           <dl className="space-y-1 text-sm">
-            <div className="flex justify-between">
-              <dt className="text-white/50">Next epoch id</dt>
+            <div className="flex justify-between gap-2">
+              <dt className="text-muted">Next epoch id</dt>
               <dd className="font-mono">{nextEpochId?.toString() ?? "—"}</dd>
             </div>
-            <div className="flex justify-between">
-              <dt className="text-white/50">Exchange admin</dt>
-              <dd className="font-mono text-xs">{admin ?? "—"}</dd>
+            <div className="flex justify-between gap-2">
+              <dt className="text-muted">Contract</dt>
+              <dd>
+                <TxLink value={PROOF_OF_RESERVES_ADDRESS} type="address" />
+              </dd>
             </div>
-            <div className="flex justify-between">
-              <dt className="text-white/50">Exchange signer</dt>
-              <dd className="font-mono text-xs">{signer ?? "—"}</dd>
+            <div className="flex justify-between gap-2">
+              <dt className="text-muted">Exchange admin</dt>
+              <dd className="font-mono text-xs">
+                {admin ? <TxLink value={admin} type="address" /> : "—"}
+              </dd>
             </div>
-            <div className="flex justify-between">
-              <dt className="text-white/50">Your role</dt>
-              <dd>{isAdmin ? "✅ admin" : "read-only"}</dd>
+            <div className="flex justify-between gap-2">
+              <dt className="text-muted">Exchange signer</dt>
+              <dd className="font-mono text-xs">
+                {signer ? <TxLink value={signer} type="address" /> : "—"}
+              </dd>
+            </div>
+            <div className="flex justify-between gap-2">
+              <dt className="text-muted">Your role</dt>
+              <dd className="inline-flex items-center gap-1">
+                {isAdmin ? (
+                  <>
+                    <CheckIcon className="text-success" aria-label="Admin" /> admin
+                  </>
+                ) : (
+                  "read-only"
+                )}
+              </dd>
             </div>
           </dl>
         </div>
 
         <div className="card">
           <h2 className="mb-3 font-semibold">Open new epoch</h2>
-          {!isConnected ? (
-            <p className="text-sm text-white/50">Connect your wallet first.</p>
-          ) : !isAdmin ? (
-            <p className="text-sm text-amber-300/80">
-              Only the exchange admin can create epochs. Connect the admin wallet
-              (the one set at deployment).
-            </p>
-          ) : (
-            <div className="space-y-3">
-              <div>
-                <label className="label">Claimed liabilities (units)</label>
-                <input
-                  className="input"
-                  type="text"
-                  inputMode="numeric"
-                  placeholder="e.g. 1000000"
-                  value={liabilities}
-                  onChange={(e) => setLiabilities(e.target.value)}
-                />
+          <NetworkGuard>
+            {!isConnected ? (
+              <p className="text-sm text-muted">Connect your wallet first.</p>
+            ) : !isAdmin ? (
+              <p className="text-sm text-warning">
+                Only the exchange admin can create epochs. Connect the admin
+                wallet (the one set at deployment).
+              </p>
+            ) : (
+              <div className="space-y-3">
+                <div>
+                  <label className="label" htmlFor={liabId}>
+                    Claimed liabilities (units)
+                  </label>
+                  <input
+                    id={liabId}
+                    className="input"
+                    type="text"
+                    inputMode="numeric"
+                    placeholder="e.g. 1000000"
+                    value={liabilities}
+                    onChange={(e) => setLiabilities(e.target.value)}
+                    aria-invalid={liabilities.length > 0 && !liabValid}
+                    aria-describedby={liabilities.length > 0 && !liabValid ? "liab-err" : undefined}
+                  />
+                  {liabilities.length > 0 && !liabValid && (
+                    <p id="liab-err" className="mt-1 text-xs text-danger">
+                      Enter a whole, non-negative number.
+                    </p>
+                  )}
+                </div>
+                <div>
+                  <label className="label" htmlFor={windowId}>
+                    Attestation window (seconds)
+                  </label>
+                  <input
+                    id={windowId}
+                    className="input"
+                    type="text"
+                    inputMode="numeric"
+                    placeholder="3600"
+                    value={windowSeconds}
+                    onChange={(e) => setWindowSeconds(e.target.value)}
+                    aria-invalid={windowSeconds.length > 0 && !windowValid}
+                  />
+                </div>
+                <button
+                  className="btn-primary w-full"
+                  disabled={!canSubmit}
+                  onClick={handleCreate}
+                >
+                  {isPending ? "Opening…" : "Open epoch"}
+                </button>
+                {txHash && (
+                  <p className="text-xs text-success" aria-live="polite">
+                    Epoch opened: <TxLink value={txHash} type="tx" /> — see the
+                    Auditor tab.
+                  </p>
+                )}
+                <ErrorText error={error} />
               </div>
-              <div>
-                <label className="label">Attestation window (seconds)</label>
-                <input
-                  className="input"
-                  type="text"
-                  inputMode="numeric"
-                  placeholder="3600"
-                  value={windowSeconds}
-                  onChange={(e) => setWindowSeconds(e.target.value)}
-                />
-              </div>
-              <button
-                className="btn-primary w-full"
-                disabled={isPending || !liabilities}
-                onClick={handleCreate}
-              >
-                {isPending ? "Opening…" : "Open epoch"}
-              </button>
-              {txHash && (
-                <p className="text-xs text-emerald-300/80">
-                  Epoch opened: {txHash.slice(0, 10)}… — see the Auditor tab.
-                </p>
-              )}
-              {error && <p className="text-xs text-red-400">{error}</p>}
-            </div>
-          )}
+            )}
+          </NetworkGuard>
         </div>
       </div>
 
-      <p className="mt-6 text-xs text-white/30">
+      <p className="mt-6 text-xs text-muted">
         Note: &ldquo;liabilities&rdquo; here is denominated in plain balance
-        units (analogous to {parseEther("0")} used only to keep the example
-        integer-clean). In production this would be a token amount.
+        units. In production this would be a token amount.
       </p>
     </Shell>
   );

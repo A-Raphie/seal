@@ -458,4 +458,58 @@ describe("ProofOfReserves", function () {
       ).to.be.revertedWithCustomError(por, "AlreadyChallenged");
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // End-to-end validation of the one-key demo model that `scripts/setup.sh`
+  // deploys (admin == signer == deployer). Proves the seed/reveal flow the
+  // setup script runs is sound. Kept here (not a standalone script) because the
+  // FHEVM mock coprocessor initializes within the mocha runner.
+  // ---------------------------------------------------------------------------
+  describe("one-key demo flow (setup.sh model)", () => {
+    it("deploys admin==signer, seeds an epoch, reveals, and proves solvent", async () => {
+      const f = (await ethers.getContractFactory("ProofOfReserves")) as ProofOfReserves__factory;
+      // admin == exchangeSigner == deployer (the one-key model).
+      por = await f.deploy(s.admin.address, s.admin.address);
+      await por.waitForDeployment();
+      porAddr = await por.getAddress();
+
+      expect(await por.exchangeAdmin()).to.eq(s.admin.address);
+      expect(await por.exchangeSigner()).to.eq(s.admin.address);
+
+      const { epochId, deadline } = await createEpoch(1_000_000n);
+      // In the one-key model the exchangeSigner IS admin, so sign with admin
+      // (the shared submitAttestation helper hardcodes s.exchangeSigner).
+      for (const [customer, balance] of [
+        [s.customer1, 400_000n],
+        [s.customer2, 350_000n],
+        [s.customer3, 300_000n],
+      ] as const) {
+        const enc = await fhevm.createEncryptedInput(porAddr, customer.address).add64(balance).encrypt();
+        const handle = enc.handles[0];
+        const signature = await signAttestation(s.admin, epochId, customer.address, handle, deadline);
+        const tx = await por
+          .connect(customer)
+          .registerAttestation(epochId, handle, ethers.hexlify(enc.inputProof), signature);
+        await tx.wait();
+      }
+
+      await time.increaseTo(Number(deadline) + 1);
+      await por.requestReveal(epochId);
+
+      const totalHandle = await por.getEncryptedTotal(epochId);
+      const solventHandle = await por.getEncryptedSolvent(epochId);
+      const result = await fhevm.publicDecrypt([totalHandle, solventHandle]);
+      await por.fulfillPublicDecryption(
+        epochId,
+        [totalHandle, solventHandle],
+        result.abiEncodedClearValues,
+        result.decryptionProof,
+      );
+
+      const info = await por.getEpoch(epochId);
+      expect(info.attestationCount).to.eq(3n);
+      expect(info.revealedTotal).to.eq(1_050_000n);
+      expect(info.solvent).to.eq(true); // 1.05M >= 1M liabilities
+    });
+  });
 });

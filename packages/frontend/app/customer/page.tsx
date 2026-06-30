@@ -1,11 +1,26 @@
 "use client";
 
-import { useState } from "react";
+import { useId, useState } from "react";
+import dynamic from "next/dynamic";
 import { useAccount, useReadContract, useWriteContract } from "wagmi";
 import { useEncrypt } from "@zama-fhe/react-sdk";
 import { Shell } from "@/components/Shell";
+import { NetworkGuard } from "@/components/NetworkGuard";
+import { TxLink } from "@/components/TxLink";
+import { ErrorText } from "@/components/ErrorText";
+import { UndeployedBanner } from "@/components/UndeployedBanner";
 import { proofOfReservesABI } from "@/lib/abi";
-import { PROOF_OF_RESERVES_ADDRESS } from "@/lib/contract";
+import { PROOF_OF_RESERVES_ADDRESS, IS_UNDEPLOYED } from "@/lib/contract";
+import { friendlyError } from "@/lib/errors";
+import { isValidUint } from "@/lib/parse";
+
+// The fraud-challenge flow pulls useDecryptPublicValues (a heavy SDK path).
+// Lazy-load it so it only ships when a user opens the challenge card — keeps
+// the initial Customer page bundle leaner.
+const ChallengeForm = dynamic(
+  () => import("@/components/ChallengeForm").then((m) => m.ChallengeForm),
+  { ssr: false, loading: () => <p className="text-sm text-muted">Loading…</p> },
+);
 
 type EpochInfo = readonly [
   bigint, // claimedLiabilities
@@ -27,6 +42,9 @@ export default function CustomerPage() {
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const epochIdInput = useId();
+  const balanceInput = useId();
+
   const { data: rawEpoch } = useReadContract({
     address: PROOF_OF_RESERVES_ADDRESS,
     abi: proofOfReservesABI,
@@ -39,10 +57,13 @@ export default function CustomerPage() {
   const now = Math.floor(Date.now() / 1000);
   const open = deadline !== 0n && BigInt(now) < deadline;
 
+  const balanceValid = isValidUint(balance);
+  const canSubmit = balanceValid && open && !isPending && !isEncrypting;
+
   async function handleSubmit() {
+    if (!address || !balanceValid) return;
     setError(null);
     setStatus(null);
-    if (!address) return;
     try {
       if (!open) throw new Error("Epoch is not open for attestations.");
       setStatus("Encrypting your balance client-side…");
@@ -77,10 +98,10 @@ export default function CustomerPage() {
         functionName: "registerAttestation",
         args: [BigInt(epochId), handle, inputProof, signature],
       });
-      setStatus(`Submitted ✓ — ${tx.slice(0, 10)}…`);
+      setStatus(tx); // rendered via TxLink below
       setBalance("");
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(friendlyError(e));
       setStatus(null);
     }
   }
@@ -88,81 +109,96 @@ export default function CustomerPage() {
   return (
     <Shell>
       <h1 className="mb-1 text-2xl font-bold">Customer</h1>
-      <p className="mb-6 text-white/50">
+      <p className="mb-6 text-muted">
         Submit your encrypted balance attestation. Your balance is encrypted in
         your browser and is <strong>never</strong> decryptable by anyone — it is
         only homomorphically summed.
       </p>
 
+      {IS_UNDEPLOYED && <UndeployedBanner />}
+
       <div className="card max-w-xl">
-        {!isConnected ? (
-          <p className="text-sm text-white/50">Connect your wallet to continue.</p>
-        ) : (
-          <div className="space-y-3">
-            <div>
-              <label className="label">Epoch id</label>
-              <input
-                className="input"
-                type="text"
-                inputMode="numeric"
-                value={epochId}
-                onChange={(e) => setEpochId(e.target.value)}
-              />
-            </div>
-            <div className="flex flex-wrap gap-4 text-xs text-white/40">
-              <span>
-                deadline:{" "}
-                <span className="font-mono">
-                  {deadline === 0n ? "—" : new Date(Number(deadline) * 1000).toLocaleString()}
+        <NetworkGuard>
+          {!isConnected ? (
+            <p className="text-sm text-muted">Connect your wallet to continue.</p>
+          ) : (
+            <div className="space-y-3">
+              <div>
+                <label className="label" htmlFor={epochIdInput}>
+                  Epoch id
+                </label>
+                <input
+                  id={epochIdInput}
+                  className="input"
+                  type="text"
+                  inputMode="numeric"
+                  value={epochId}
+                  onChange={(e) => setEpochId(e.target.value)}
+                />
+              </div>
+              <div className="flex flex-wrap gap-4 text-xs text-muted" aria-live="polite">
+                <span>
+                  deadline:{" "}
+                  <span className="font-mono">
+                    {deadline === 0n
+                      ? "—"
+                      : new Date(Number(deadline) * 1000).toLocaleString()}
+                  </span>
                 </span>
-              </span>
-              <span>
-                status:{" "}
-                {deadline === 0n ? (
-                  "no epoch"
-                ) : open ? (
-                  <span className="text-emerald-300">open</span>
-                ) : (
-                  <span className="text-amber-300">closed</span>
+                <span>
+                  status:{" "}
+                  {deadline === 0n ? (
+                    "no epoch"
+                  ) : open ? (
+                    <span className="text-success">open</span>
+                  ) : (
+                    <span className="text-warning">closed</span>
+                  )}
+                </span>
+              </div>
+              <div>
+                <label className="label" htmlFor={balanceInput}>
+                  Your balance (units)
+                </label>
+                <input
+                  id={balanceInput}
+                  className="input"
+                  type="text"
+                  inputMode="numeric"
+                  placeholder="e.g. 4200"
+                  value={balance}
+                  onChange={(e) => setBalance(e.target.value)}
+                  aria-invalid={balance.length > 0 && !balanceValid}
+                />
+                {balance.length > 0 && !balanceValid && (
+                  <p className="mt-1 text-xs text-danger">
+                    Enter a whole, non-negative number.
+                  </p>
                 )}
-              </span>
+              </div>
+              <button className="btn-primary w-full" disabled={!canSubmit} onClick={handleSubmit}>
+                {isEncrypting ? "Encrypting…" : isPending ? "Submitting…" : "Submit attestation"}
+              </button>
+              {status && (
+                <p className="text-xs text-success" aria-live="polite">
+                  Submitted ✓ <TxLink value={status} type="tx" />
+                </p>
+              )}
+              <ErrorText error={error} />
             </div>
-            <div>
-              <label className="label">Your balance (units)</label>
-              <input
-                className="input"
-                type="text"
-                inputMode="numeric"
-                placeholder="e.g. 4200"
-                value={balance}
-                onChange={(e) => setBalance(e.target.value)}
-              />
-            </div>
-            <button
-              className="btn-primary w-full"
-              disabled={isPending || isEncrypting || !balance || !open}
-              onClick={handleSubmit}
-            >
-              {isEncrypting ? "Encrypting…" : isPending ? "Submitting…" : "Submit attestation"}
-            </button>
-            {status && <p className="text-xs text-emerald-300/80">{status}</p>}
-            {error && <p className="text-xs text-red-400">{error}</p>}
-          </div>
-        )}
+          )}
+        </NetworkGuard>
       </div>
 
       <div className="card mt-6 max-w-xl">
-        <h2 className="mb-2 font-semibold">Fraud challenge</h2>
-        <p className="text-sm text-white/50">
-          If the exchange signed two ciphertexts that encrypt{" "}
-          <em>different</em> values for you in one epoch, submit both as a
-          challenge. The contract proves the conflict under FHE (
-          <code>FHE.ne</code>) without revealing either balance. See the{" "}
-          <a className="underline" href="https://github.com/A-Raphie/fhe-proof-of-reserves">
-            CLI
-          </a>{" "}
-          for producing challenge payloads.
-        </p>
+        <h2 className="mb-3 font-semibold">Fraud challenge</h2>
+        <NetworkGuard>
+          {isConnected ? (
+            <ChallengeForm epochId={epochId} deadline={deadline} />
+          ) : (
+            <p className="text-sm text-muted">Connect your wallet to file a challenge.</p>
+          )}
+        </NetworkGuard>
       </div>
     </Shell>
   );

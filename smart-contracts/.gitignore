@@ -23,3 +23,6 @@ tmp
 coverage.json
 pnpm-lock.yaml
 yarn.lock
+
+# generated exchange signing key (contains a private key — never commit)
+.deploy-exchange-key.json

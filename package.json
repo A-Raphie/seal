@@ -11,7 +11,10 @@
     "build": "pnpm --filter frontend build",
     "lint": "pnpm -r lint",
     "typecheck": "pnpm -r typecheck",
-    "test": "pnpm --filter smart-contracts test"
+    "test": "pnpm --filter smart-contracts test",
+    "setup": "bash scripts/setup.sh",
+    "seed": "pnpm --filter smart-contracts hardhat run scripts/seed.ts --network sepolia",
+    "reveal": "pnpm --filter smart-contracts hardhat run scripts/reveal.ts --network sepolia"
   },
   "engines": {
     "node": ">=20"

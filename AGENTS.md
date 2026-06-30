@@ -8,6 +8,16 @@ homomorphically; only the aggregate is ever decrypted — and only after the
 attestation window closes. Built for the Zama Developer Program Mainnet
 Season 3 — Builder Track (deadline July 7, AOE).
 
+**Scoped trust assumption (state explicitly in all external docs):** the
+contract proves `sum(exchange-signed attestations) >= claimedLiabilities`.
+`claimedLiabilities` is the exchange's own asserted off-chain number — PoR
+cannot prove it without off-chain oracles, and we do not pretend otherwise.
+What FHE *does* guarantee: the reserves side cannot be inflated with fake
+balances, because every reserve entry is exchange-signed, replay-bound
+(`attestationUsed`), and fraud-challengeable via `FHE.ne`. Frame the liability
+figure as the irreducible PoR limitation, and the ciphertext-summed reserves
+as the part FHE makes trustless.
+
 ## Non-negotiable design rules
 These exist because the predecessor project (SealedBid) lost primarily by
 violating them. Do NOT violate them without an explicit, documented exception.
@@ -17,7 +27,8 @@ violating them. Do NOT violate them without an explicit, documented exception.
    server-side decryption.
 2. **ACL discipline.** Individual customer balances get `FHE.allowThis` ONLY
    (so the contract can `FHE.add` them). Never `FHE.allow(operator)`. Only the
-   epoch aggregate gets public ACL — and only inside `revealTotal()`.
+   epoch aggregate total + the 1-bit solvency result get public ACL — and only
+   inside `requestReveal()`, which reverts until the window has closed.
 3. **New SDK only.** Use `@zama-fhe/sdk` + `@zama-fhe/react-sdk` with
    `ZamaProvider`. Zero `@zama-fhe/relayer-sdk`. No `window.relayerSDK` CDN
    loader.
@@ -35,38 +46,63 @@ violating them. Do NOT violate them without an explicit, documented exception.
 - **Exchange** (off-chain CLI): signs EIP-712 attestations binding
   `(epochId, customerId, balance, deadline)` for each customer.
 - **Contract**: verifies exchange signature, `FHE.add`s the ciphertext to the
-  epoch's running total, marks attestation hash used. After deadline, anyone
-  calls `revealTotal(epochId)` → aggregate decrypts publicly. Contract computes
-  `solvent = revealedTotal >= claimedLiabilities`.
+  epoch's running total, marks attestation hash used. After the deadline,
+  `requestReveal(epochId)` computes the solvency bit **under encryption** via
+  `FHE.ge(encryptedTotal, claimedLiabilities)` and marks the total + bit
+  publicly decryptable. Separately, `fulfillPublicDecryption(epochId, ...)`
+  verifies the KMS threshold signatures (`FHE.checkSignatures`) over the
+  decrypted cleartexts and stores the plaintext total + solvency bit. There is
+  no operator-supplied plaintext result.
 - **Auditor / public**: reads historical epoch timeline; verifies each epoch's
   solvency boolean without ever seeing individual balances.
 - **Challenge path**: a customer who catches the exchange signing an inflated
   balance for a (possibly fake) account submits a conflicting signed
   attestation → contract flags fraud on-chain.
 
-## Contract sketch (canonical, do not drift without team approval)
+## Contract sketch (canonical — mirrors `ProofOfReserves.sol`)
 ```solidity
 contract ProofOfReserves is ZamaEthereumConfig {
     struct Epoch {
         uint64 claimedLiabilities;
         uint64 deadline;
         euint64 encryptedTotal;
-        uint64 revealedTotal;
-        bool revealed;
-        bool solvent;
+        ebool encryptedSolvent;     // FHE.ge(total, liabilities), computed under FHE
+        uint64 revealedTotal;       // plaintext, set by fulfillPublicDecryption
+        bool solvent;               // plaintext, set by fulfillPublicDecryption
+        bool revealed;              // requestReveal() called
+        bool fulfilled;             // public decryption result stored
+        uint256 attestationCount;
     }
-    mapping(uint256 => Epoch) public epochs;
-    mapping(bytes32 => bool) _usedAttestationHashes;
-    mapping(bytes32 => FraudChallenge) public challenges;
-    address public exchangeSigner;
+    struct FraudChallenge {
+        address challenger;
+        address customer;
+        ebool encryptedDiffer;      // FHE.ne(encA, encB)
+        bool fulfilled;
+        bool fraudProven;
+    }
+    mapping(uint256 => Epoch) private _epochs;
+    mapping(bytes32 => bool) public attestationUsed;
+    mapping(bytes32 => FraudChallenge) private _challenges;
+    mapping(uint256 => bool) public epochFraudulent;
+    address public immutable exchangeAdmin;   // hot key, creates epochs
+    address public immutable exchangeSigner;  // cold key, signs attestations
 
-    function createEpoch(uint64 liabilities, uint64 windowSeconds) external;
-    function registerAttestation(uint256 epochId, bytes sig, externalEuint64 enc, bytes proof) external;
-    function revealTotal(uint256 epochId) external;
+    function createEpoch(uint64 liabilities, uint64 windowSeconds) external onlyExchangeAdmin returns (uint256);
+    function registerAttestation(uint256 epochId, externalEuint64 enc, bytes proof, bytes sig) external;
+    function requestReveal(uint256 epochId) external;                       // FHE.ge + makePubliclyDecryptable
+    function fulfillPublicDecryption(uint256 epochId, bytes32[] handles, bytes cleartexts, bytes proof) external;
+    function challengeConflictingAttestation(uint256 epochId, externalEuint64 ctA, bytes prA, bytes sigA, externalEuint64 ctB, bytes prB, bytes sigB) external;
+    function fulfillChallenge(uint256 epochId, address customer, bytes32[] handles, bytes cleartexts, bytes proof) external;
     function isSolvent(uint256 epochId) external view returns (bool);
-    function challengeAttestation(bytes conflictingSig, externalEuint64 realEnc, bytes proof) external;
+    function isFraudulent(uint256 epochId) external view returns (bool);
 }
 ```
+NOTE: this sketch must stay in lock-step with `ProofOfReserves.sol`. The
+previous version of this section described a `revealTotal()` design that
+computed `solvent = revealedTotal >= claimedLiabilities` as a **plaintext
+comparison after decrypt** — which would itself violate design rule #1. The
+live contract instead computes the solvency bit under encryption in
+`requestReveal()`; do not regress.
 
 ## Tech stack (locked)
 - Solidity ^0.8.24, `@fhevm/solidity`, `ZamaEthereumConfig`
@@ -114,7 +150,8 @@ fhe-proof-of-reserves/
 
 ## Build phases (14 days to July 7)
 0. **Setup (1d)** — scaffold, hello-world deploy, verify ZamaProvider + relayer
-1. **Contract single-epoch (2d)** — registerAttestation, revealTotal, isSolvent
+1. **Contract single-epoch (2d)** — registerAttestation, requestReveal,
+   fulfillPublicDecryption, isSolvent
 2. **Multi-epoch + challenge path (2d)** — parameterize by epochId, fraud proof
 3. **Exchange signer CLI (1.5d)** — EIP-712 signing + sample fixtures
 4. **Frontend 3-pane + timeline (4d)** — customer/exchange/auditor + epoch history
@@ -134,9 +171,10 @@ fhe-proof-of-reserves/
 ## ACL audit checklist (run before each deploy)
 - [ ] No individual customer balance ciphertext has any `FHE.allow` other than
       `allowThis`.
-- [ ] Only `epochs[epochId].encryptedTotal` gets public ACL, only inside
-      `revealTotal()`, only after `block.timestamp >= deadline`.
-- [ ] `challengeAttestation` never decrypts the real balance to anyone except
-      the challenger and (optionally) a designated auditor role.
+- [ ] Only `encryptedTotal` + `encryptedSolvent` get public ACL, only inside
+      `requestReveal()`, only after `block.timestamp >= deadline`.
+- [ ] `challengeConflictingAttestation`'s two ciphertexts are `allowThis`-only;
+      only the 1-bit `differ` result (`FHE.ne`) is marked publicly decryptable.
+      Neither balance is ever revealed — not to the challenger, not to anyone.
 - [ ] The "Why FHE?" table has a one-to-one mapping to lines of code in
       `ProofOfReserves.sol`.

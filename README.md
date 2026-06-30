@@ -51,6 +51,36 @@ decrypts only (a) the aggregate total and (b) a 1-bit solvency result.
    │                             │              │                   │  → solvent: true/false    │
 ```
 
+### Trust assumptions — what this does and does not prove
+
+The contract proves `sum(exchange-signed attestations) >= claimedLiabilities`.
+Two things to be precise about:
+
+- **`claimedLiabilities` is the exchange's own asserted number.** It is passed
+  into `createEpoch` off-chain; PoR fundamentally cannot verify the real-world
+  liability figure without off-chain oracles, and this project does not pretend
+  it can. That is the irreducible PoR limitation, and we state it plainly rather
+  than hand-wave over it.
+- **The reserves side is what FHE makes trustless.** The exchange cannot inflate
+  reserves with fake balances, because every reserve entry is (a) signed by the
+  cold `exchangeSigner` key, (b) replay-bound via `attestationUsed`, and
+  (c) fraud-challengeable by any aggrieved customer via `FHE.ne`. The aggregate
+  is computed on-chain over ciphertexts the exchange committed to and cannot
+  alter after the window opens.
+
+### Why not ZK? (the honest answer)
+
+The natural objection: *couldn't the exchange just generate a zkSNARK proving
+`sum(balances) >= liabilities`?* It could — but ZK proves a claim the prover
+**asserts**: the exchange is also the prover choosing the witness, so a
+malicious exchange can craft a false witness and the proof will still verify.
+
+FHE removes the prover from the trust path. The exchange does not supply a
+result to be proven; it supplies **committed ciphertexts** (one signed
+attestation per customer). The contract then *computes* the aggregate and the
+solvency bit homomorphically over data the exchange can no longer change. The
+result is derived, not attested — trustless, not trust-the-prover.
+
 ---
 
 ## Why FHE? — verified against the ACL graph
@@ -86,7 +116,7 @@ decrypts only (a) the aggregate total and (b) a 1-bit solvency result.
 fhe-proof-of-reserves/
 ├── smart-contracts/        Solidity 0.8.27 + @fhevm/solidity (Hardhat)
 │   ├── contracts/ProofOfReserves.sol
-│   └── test/ProofOfReserves.test.ts            (17 tests, all green)
+│   └── test/ProofOfReserves.test.ts            (18 tests, all green)
 ├── packages/
 │   ├── frontend/          Next.js 15 · wagmi v2 · RainbowKit · @zama-fhe/react-sdk
 │   │   ├── app/(exchange|customer|audit)       3-pane dApp
@@ -138,33 +168,60 @@ pnpm install
 
 ### 2. Run the contract tests
 ```bash
-pnpm --filter smart-contracts test     # 17 tests, ~300ms
+pnpm --filter smart-contracts test     # 18 tests, ~900ms
 ```
 
-### 3. Deploy to Sepolia
-```bash
-cd smart-contracts
-npx hardhat vars set MNEMONIC           "your twelve word deployer mnemonic"
-npx hardhat vars set INFURA_API_KEY     "your-infura-project-id"
-npx hardhat vars set ETHERSCAN_API_KEY  "your-etherscan-api-key"
-# optionally override the exchange admin/signer (default = deployer):
-EXCHANGE_ADMIN=0x… EXCHANGE_SIGNER=0x… pnpm deploy:sepolia
-```
-Copy the printed `ProofOfReserves` address.
+### 3. Deploy to Sepolia + seed demo data (one command)
 
-### 4. Configure + run the frontend
+The `scripts/setup.sh` orchestrator does everything: install → deploy →
+Etherscan-verify → wire `frontend/.env.local` → seed a demo epoch (1 epoch,
+3 attestations). The deploy **auto-generates and persists** the exchange signing
+key, so there's no manual key step.
+
+Prerequisites (one-time, ~10 min):
+1. A wallet with Sepolia ETH (faucet: <https://sepoliafaucet.com>).
+2. From inside `smart-contracts/`, set three hardhat vars:
+   ```bash
+   cd smart-contracts
+   npx hardhat vars set MNEMONIC           "your twelve word deployer mnemonic"
+   npx hardhat vars set INFURA_API_KEY     "your-infura-project-id"
+   npx hardhat vars set ETHERSCAN_API_KEY  "your-etherscan-api-key"
+   cd ..
+   ```
+3. From the repo root:
+   ```bash
+   pnpm setup
+   ```
+
+`setup.sh` prints the Etherscan link and the one remaining manual step
+(trigger the reveal after the seeded epoch's 1h window closes).
+
+> **Verification note:** the deploy waits 5 confirmations so
+> `verify:sepolia` succeeds first try. If you verify manually, hardhat-deploy
+> already recorded the constructor args (`exchangeAdmin`, `exchangeSigner`), so
+> no `--constructor-args` flag is needed.
+
+### 4. Run the frontend
 ```bash
-cp packages/frontend/.env.example packages/frontend/.env.local
-# fill in NEXT_PUBLIC_POR_ADDRESS, NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID,
-# and EXCHANGE_SIGNER_PRIVATE_KEY (= the exchangeSigner key set at deploy)
-pnpm --filter frontend dev
+pnpm dev      # http://localhost:3000
 ```
+`setup.sh` already wrote `packages/frontend/.env.local`
+(`NEXT_PUBLIC_POR_ADDRESS` + `EXCHANGE_SIGNER_PRIVATE_KEY`). You only need to
+add `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` if you want QR-code wallet
+connections (MetaMask works without it).
 
 ### 5. (Optional) Exchange CLI
 ```bash
 cd packages/exchange-cli
 POR_ADDRESS=0x… EXCHANGE_PRIVATE_KEY=0x… pnpm start create-epoch 1000000 3600
 POR_ADDRESS=0x… EXCHANGE_PRIVATE_KEY=0x… pnpm start sign <epochId> <customer> <handle> <deadline>
+```
+
+### 6. (After the epoch window) Reveal the seeded epoch
+The seed script can't time-travel on public Sepolia, so once the 1h window
+closes, run the reveal (the Auditor pane does the same two steps):
+```bash
+pnpm --filter smart-contracts hardhat run scripts/reveal.ts --network sepolia
 ```
 
 ### Deploy the frontend (Vercel)

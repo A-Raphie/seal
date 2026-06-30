@@ -4,8 +4,13 @@ import { useMemo, useState } from "react";
 import { useReadContracts, useWriteContract } from "wagmi";
 import { useDecryptPublicValues } from "@zama-fhe/react-sdk";
 import { Shell } from "@/components/Shell";
+import { NetworkGuard } from "@/components/NetworkGuard";
+import { ErrorText } from "@/components/ErrorText";
+import { UndeployedBanner } from "@/components/UndeployedBanner";
+import { CheckIcon, XIcon, AlertIcon } from "@/components/icons";
 import { proofOfReservesABI } from "@/lib/abi";
-import { PROOF_OF_RESERVES_ADDRESS } from "@/lib/contract";
+import { PROOF_OF_RESERVES_ADDRESS, IS_UNDEPLOYED } from "@/lib/contract";
+import { friendlyError } from "@/lib/errors";
 
 type EpochTuple = readonly [
   bigint, // claimedLiabilities
@@ -88,7 +93,7 @@ export default function AuditPage() {
       });
       await refetch();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(friendlyError(e));
     } finally {
       setBusy(null);
     }
@@ -111,7 +116,7 @@ export default function AuditPage() {
       });
       await refetch();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(friendlyError(e));
     } finally {
       setBusy(null);
     }
@@ -120,83 +125,116 @@ export default function AuditPage() {
   return (
     <Shell>
       <h1 className="mb-1 text-2xl font-bold">Auditor</h1>
-      <p className="mb-6 text-white/50">
+      <p className="mb-6 text-muted">
         Publicly verify each epoch&rsquo;s solvency — without seeing any
         individual balance. Anyone can drive the trustless reveal.
       </p>
 
-      {count === 0 ? (
-        <p className="text-sm text-white/50">No epochs yet.</p>
-      ) : (
-        <div className="space-y-3">
-          {ids.map((idBig, i) => {
-            const e = rows?.[i].result as EpochTuple | undefined;
-            if (!e) return null;
-            const [liabilities, deadline, revealedTotal, solvent, revealed, fulfilled, attCount] = e;
-            const fraudulent = extra?.[i * 3].result as boolean | undefined;
-            const now = Math.floor(Date.now() / 1000);
-            const closed = deadline !== 0n && BigInt(now) >= deadline;
-            const totalHandle = extra?.[i * 3 + 1].result as unknown as `0x${string}` | undefined;
-            const solventHandle = extra?.[i * 3 + 2].result as unknown as `0x${string}` | undefined;
+      {IS_UNDEPLOYED && <UndeployedBanner />}
 
-            return (
-              <div key={i} className="card">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className="font-semibold">Epoch #{i}</span>
-                      {fraudulent && (
-                        <span className="tag bg-red-500/20 text-red-300">⚠ fraudulent</span>
-                      )}
-                      {fulfilled && !fraudulent && (
-                        <span
-                          className={`tag ${
-                            solvent ? "bg-emerald-500/20 text-emerald-300" : "bg-amber-500/20 text-amber-300"
-                          }`}
-                        >
-                          {solvent ? "✓ solvent" : "✗ insolvent"}
-                        </span>
-                      )}
-                    </div>
-                    <div className="mt-1 text-xs text-white/40">
-                      liabilities: {liabilities.toString()} · attestations: {attCount.toString()} · deadline:{" "}
-                      {deadline === 0n
-                        ? "—"
-                        : new Date(Number(deadline) * 1000).toLocaleString()}
-                    </div>
-                  </div>
-                  <div className="flex gap-2">
-                    {!closed && deadline !== 0n && (
-                      <span className="text-xs text-white/40">window open</span>
-                    )}
-                    {closed && !revealed && (
-                      <button className="btn-ghost text-sm" disabled={busy === i || isPending} onClick={() => reveal(i)}>
-                        {busy === i ? "…" : "1. Reveal"}
-                      </button>
-                    )}
-                    {revealed && !fulfilled && totalHandle && solventHandle && (
-                      <button
-                        className="btn-primary text-sm"
-                        disabled={busy === i || isPending}
-                        onClick={() => fulfill(i)}
-                      >
-                        {busy === i ? "…" : "2. Decrypt & verify"}
-                      </button>
-                    )}
-                    {fulfilled && (
-                      <div className="text-right text-sm">
-                        <div className="text-white/40">revealed total</div>
-                        <div className="font-mono text-lg">{revealedTotal.toString()}</div>
+      <NetworkGuard>
+        {count === 0 ? (
+          <div className="card text-sm text-muted">
+            <p className="font-semibold text-foreground">No epochs yet.</p>
+            <p className="mt-1">
+              An exchange admin needs to open the first attestation epoch. If
+              you&rsquo;re running the demo, this happens automatically via{" "}
+              <code className="rounded bg-black/40 px-1.5 py-0.5 font-mono text-xs">
+                pnpm setup
+              </code>{" "}
+              (which deploys and seeds an epoch). See the README.
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {ids.map((idBig, i) => {
+              const e = rows?.[i].result as EpochTuple | undefined;
+              if (!e) return null;
+              const [liabilities, deadline, revealedTotal, solvent, revealed, fulfilled, attCount] = e;
+              const fraudulent = extra?.[i * 3].result as boolean | undefined;
+              const now = Math.floor(Date.now() / 1000);
+              const closed = deadline !== 0n && BigInt(now) >= deadline;
+              const totalHandle = extra?.[i * 3 + 1].result as unknown as `0x${string}` | undefined;
+              const solventHandle = extra?.[i * 3 + 2].result as unknown as `0x${string}` | undefined;
+
+              return (
+                <div key={i} className="card">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-semibold">Epoch #{i}</span>
+                        {fraudulent && (
+                          <span className="tag inline-flex items-center gap-1 bg-danger/20 text-danger">
+                            <AlertIcon aria-label="Fraudulent" /> fraudulent
+                          </span>
+                        )}
+                        {fulfilled && !fraudulent && (
+                          <span
+                            className={`tag inline-flex items-center gap-1 ${
+                              solvent
+                                ? "bg-success/20 text-success"
+                                : "bg-warning/20 text-warning"
+                            }`}
+                          >
+                            {solvent ? (
+                              <>
+                                <CheckIcon aria-label="Solvent" /> solvent
+                              </>
+                            ) : (
+                              <>
+                                <XIcon aria-label="Insolvent" /> insolvent
+                              </>
+                            )}
+                          </span>
+                        )}
                       </div>
-                    )}
+                      <div className="mt-1 text-xs text-muted">
+                        liabilities: {liabilities.toString()} · attestations:{" "}
+                        {attCount.toString()} · deadline:{" "}
+                        {deadline === 0n
+                          ? "—"
+                          : new Date(Number(deadline) * 1000).toLocaleString()}
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      {!closed && deadline !== 0n && (
+                        <span className="text-xs text-muted">window open</span>
+                      )}
+                      {closed && !revealed && (
+                        <button
+                          className="btn-ghost text-sm"
+                          disabled={busy === i || isPending}
+                          onClick={() => reveal(i)}
+                        >
+                          {busy === i ? "…" : "1. Reveal"}
+                        </button>
+                      )}
+                      {revealed && !fulfilled && totalHandle && solventHandle && (
+                        <button
+                          className="btn-primary text-sm"
+                          disabled={busy === i || isPending}
+                          onClick={() => fulfill(i)}
+                        >
+                          {busy === i ? "…" : "2. Decrypt & verify"}
+                        </button>
+                      )}
+                      {fulfilled && (
+                        <div className="text-right text-sm">
+                          <div className="text-muted">revealed total</div>
+                          <div className="font-mono text-lg">{revealedTotal.toString()}</div>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
-              </div>
-            );
-          })}
+              );
+            })}
+          </div>
+        )}
+        <div className="mt-4">
+          <ErrorText error={error} />
         </div>
-      )}
-      {error && <p className="mt-4 text-xs text-red-400">{error}</p>}
+      </NetworkGuard>
     </Shell>
   );
 }
