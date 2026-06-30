@@ -13,6 +13,8 @@ Built for the [Zama Developer Program — Mainnet Season 3, Builder Track](https
 - **Live site:** _TODO — Vercel URL_
 - **3-min pitch:** _TODO — video URL (real-person pitch, no AI voice)_
 - **X thread:** _TODO_
+- **ProofOfReserves (Sepolia):** [0xF95799D4E3D634Ce42107ff7496F3D48371b35cc](https://sepolia.etherscan.io/address/0xF95799D4E3D634Ce42107ff7496F3D48371b35cc)
+- **AuditorCredential (Sepolia):** [0xd3a4350a4E3a4b9BE4e1Ef5f7AFB267b8B7A8BfA](https://sepolia.etherscan.io/address/0xd3a4350a4E3a4b9BE4e1Ef5f7AFB267b8B7A8BfA)
 
 ---
 
@@ -197,7 +199,7 @@ off-chain. The registrar accredits (`accredit`) and can revoke (`revoke`);
 | `revoke(auditor)` | registrar burns the credential — auditor loses all decryption rights |
 | `isAuditor(account)` / `balanceOf(account)` | the gate `requestReveal` checks |
 
-Verified on Sepolia: _TODO — Etherscan links (both contracts)_
+Verified on Sepolia: [ProofOfReserves](https://sepolia.etherscan.io/address/0xF95799D4E3D634Ce42107ff7496F3D48371b35cc#code) · [AuditorCredential](https://sepolia.etherscan.io/address/0xd3a4350a4E3a4b9BE4e1Ef5f7AFB267b8B7A8BfA#code)
 
 ---
 
