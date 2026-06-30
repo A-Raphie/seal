@@ -81,6 +81,11 @@ async function main() {
   console.log(`   contract:      ${porAddr}`);
   console.log(`   exchangeSigner:${exchangeWallet.address}\n`);
 
+  // On live networks the fhevm plugin must be initialized before any
+  // createEncryptedInput / publicDecrypt call. (Tests auto-init via the mock.)
+  console.log(`   initializing fhevm (connects to the Zama relayer)…`);
+  await fhevm.initializeCLIApi();
+
   // Verify key match — the #1 foot-gun.
   const onChainSigner = await por.exchangeSigner();
   if (onChainSigner.toLowerCase() !== exchangeWallet.address.toLowerCase()) {

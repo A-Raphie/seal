@@ -44,6 +44,11 @@ async function main() {
 
   console.log(`\n🔓 Revealing epoch ${EPOCH_ID} on ${network.name}\n`);
 
+  // On live networks the fhevm plugin must be initialized before any
+  // publicDecrypt call. (Tests auto-init via the mock.)
+  console.log(`   initializing fhevm (connects to the Zama relayer)…`);
+  await fhevm.initializeCLIApi();
+
   // Composable-privacy gate: the reveal-er must hold an auditor credential.
   const isAuditor = await cred.isAuditor(signer.address);
   if (!isAuditor) {
