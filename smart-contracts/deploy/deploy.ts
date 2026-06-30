@@ -45,15 +45,29 @@ const func: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
   const exchangeAdmin = process.env.EXCHANGE_ADMIN ?? deployer;
   const exchangeSigner = process.env.EXCHANGE_SIGNER ?? loadOrGenerateExchangeKey().address;
 
+  // Composable-privacy seam: the AuditorCredential (soulbound ERC-721) gates
+  // who may drive requestReveal and decrypt an epoch's aggregate total. The
+  // registrar defaults to the exchange admin (it accredits auditors).
+  const credentialRegistrar = process.env.AUDITOR_REGISTRAR ?? exchangeAdmin;
+
+  const credential = await deploy("AuditorCredential", {
+    from: deployer,
+    args: [credentialRegistrar],
+    log: true,
+    waitConfirmations: 5,
+  });
+
   const deployed = await deploy("ProofOfReserves", {
     from: deployer,
-    args: [exchangeAdmin, exchangeSigner],
+    args: [exchangeAdmin, exchangeSigner, credential.address],
     log: true,
     // 5 confirmations so `verify:sepolia` succeeds on the first try — Etherscan
     // usually needs the bytecode indexed before it will accept verification.
     waitConfirmations: 5,
   });
 
+  console.log(`AuditorCredential deployed at: ${credential.address}`);
+  console.log(`  registrar    : ${credentialRegistrar}`);
   console.log(`ProofOfReserves deployed at: ${deployed.address}`);
   console.log(`  exchangeAdmin : ${exchangeAdmin}`);
   console.log(`  exchangeSigner: ${exchangeSigner}`);
@@ -66,4 +80,4 @@ const func: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
 
 export default func;
 func.id = "deploy_proofOfReserves";
-func.tags = ["ProofOfReserves"];
+func.tags = ["ProofOfReserves", "AuditorCredential"];

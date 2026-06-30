@@ -2,15 +2,21 @@ import { expect } from "chai";
 import { ethers, fhevm } from "hardhat";
 import { time } from "@nomicfoundation/hardhat-network-helpers";
 import { HardhatEthersSigner } from "@nomicfoundation/hardhat-ethers/signers";
-import { ProofOfReserves, ProofOfReserves__factory } from "../types";
+import {
+  AuditorCredential,
+  AuditorCredential__factory,
+  ProofOfReserves,
+  ProofOfReserves__factory,
+} from "../types";
 
 type Signers = {
-  admin: HardhatEthersSigner; // exchange admin (creates epochs)
+  admin: HardhatEthersSigner; // exchange admin (creates epochs) + credential registrar
   exchangeSigner: HardhatEthersSigner; // off-chain attestation signer
+  auditor: HardhatEthersSigner; // accredited auditor (may requestReveal + decrypt total)
   customer1: HardhatEthersSigner;
   customer2: HardhatEthersSigner;
   customer3: HardhatEthersSigner;
-  nobody: HardhatEthersSigner;
+  nobody: HardhatEthersSigner; // non-accredited account
 };
 
 const EPOCH_WINDOW = 3600; // 1 hour
@@ -39,25 +45,43 @@ describe("ProofOfReserves", function () {
   let s: Signers;
   let por: ProofOfReserves;
   let porAddr: string;
+  let cred: AuditorCredential;
+  let credAddr: string;
 
   before(async () => {
     const all = await ethers.getSigners();
     s = {
       admin: all[0],
       exchangeSigner: all[1],
-      customer1: all[2],
-      customer2: all[3],
-      customer3: all[4],
-      nobody: all[5],
+      auditor: all[2],
+      customer1: all[3],
+      customer2: all[4],
+      customer3: all[5],
+      nobody: all[6],
     };
   });
 
-  async function deployFixture() {
+  /**
+   * Deploys AuditorCredential (registrar = admin) + ProofOfReserves, then
+   * accredits `s.auditor`. Every fixture in this suite needs the credential
+   * wiring because requestReveal is auditor-gated.
+   */
+  async function deployFixture(opts?: { accredit?: boolean }) {
+    const accredit = opts?.accredit ?? true;
+    const cf = (await ethers.getContractFactory("AuditorCredential")) as AuditorCredential__factory;
+    cred = await cf.deploy(s.admin.address);
+    await cred.waitForDeployment();
+    credAddr = await cred.getAddress();
+
     const f = (await ethers.getContractFactory("ProofOfReserves")) as ProofOfReserves__factory;
-    por = await f.deploy(s.admin.address, s.exchangeSigner.address);
+    por = await f.deploy(s.admin.address, s.exchangeSigner.address, credAddr);
     await por.waitForDeployment();
     porAddr = await por.getAddress();
-    return { por, porAddr };
+
+    if (accredit) {
+      await (await cred.connect(s.admin).accredit(s.auditor.address)).wait();
+    }
+    return { por, porAddr, cred, credAddr };
   }
 
   async function createEpoch(
@@ -87,19 +111,42 @@ describe("ProofOfReserves", function () {
     return { handleBytes32, signature };
   }
 
+  /**
+   * requestReveal (as the accredited auditor) + public-decrypt + fulfill the
+   * 1-bit verdict. Returns the decrypted verdict.
+   */
+  async function revealAndFulfill(epochId: bigint, caller: HardhatEthersSigner = s.auditor): Promise<boolean> {
+    await por.connect(caller).requestReveal(epochId);
+    const solventHandle = ethers.hexlify(await por.getEncryptedSolvent(epochId));
+    const result = await fhevm.publicDecrypt([solventHandle]);
+    await por
+      .connect(s.nobody)
+      .fulfillVerdict(epochId, [solventHandle], result.abiEncodedClearValues, result.decryptionProof);
+    return Boolean(result.clearValues[0]);
+  }
+
   describe("deployment & access control", () => {
     beforeEach(async () => {
       await deployFixture();
     });
 
-    it("records admin and signer", async () => {
+    it("records admin, signer, and auditor credential", async () => {
       expect(await por.exchangeAdmin()).to.eq(s.admin.address);
       expect(await por.exchangeSigner()).to.eq(s.exchangeSigner.address);
+      expect(await por.auditorCredential()).to.eq(credAddr);
     });
 
     it("rejects zero addresses", async () => {
       const f = (await ethers.getContractFactory("ProofOfReserves")) as ProofOfReserves__factory;
-      await expect(f.deploy(ethers.ZeroAddress, s.exchangeSigner.address)).to.be.revertedWithCustomError(
+      await expect(f.deploy(ethers.ZeroAddress, s.exchangeSigner.address, credAddr)).to.be.revertedWithCustomError(
+        por,
+        "ZeroAddress",
+      );
+      await expect(f.deploy(s.admin.address, ethers.ZeroAddress, credAddr)).to.be.revertedWithCustomError(
+        por,
+        "ZeroAddress",
+      );
+      await expect(f.deploy(s.admin.address, s.exchangeSigner.address, ethers.ZeroAddress)).to.be.revertedWithCustomError(
         por,
         "ZeroAddress",
       );
@@ -113,12 +160,49 @@ describe("ProofOfReserves", function () {
     });
   });
 
+  describe("AuditorCredential (composable-privacy gate)", () => {
+    beforeEach(async () => {
+      await deployFixture();
+    });
+
+    it("accredits an auditor and reports isAuditor=true", async () => {
+      // auditor was already accredited in the fixture.
+      expect(await cred.isAuditor(s.auditor.address)).to.eq(true);
+      expect(await cred.balanceOf(s.auditor.address)).to.eq(1n);
+    });
+
+    it("non-registrar cannot accredit", async () => {
+      await expect(cred.connect(s.nobody).accredit(s.customer1.address)).to.be.revertedWithCustomError(
+        cred,
+        "NotRegistrar",
+      );
+    });
+
+    it("rejects double-accreditation (already accredited)", async () => {
+      await expect(cred.connect(s.admin).accredit(s.auditor.address)).to.be.revertedWithCustomError(
+        cred,
+        "AlreadyAccredited",
+      );
+    });
+
+    it("is soulbound: transfer is blocked", async () => {
+      await expect(
+        cred.connect(s.auditor).transferFrom(s.auditor.address, s.nobody.address, 1),
+      ).to.be.revertedWithCustomError(cred, "Soulbound");
+    });
+
+    it("registrar can revoke a credential, revoking decryption rights", async () => {
+      await (await cred.connect(s.admin).revoke(s.auditor.address)).wait();
+      expect(await cred.isAuditor(s.auditor.address)).to.eq(false);
+    });
+  });
+
   describe("single-epoch happy path (solvent)", () => {
     beforeEach(async () => {
       await deployFixture();
     });
 
-    it("registers 3 attestations, reveals, and proves solvent=true", async () => {
+    it("registers 3 attestations, auditor reveals, and proves solvent=true", async () => {
       // Liabilities 1,000; real customer balances 400 + 350 + 300 = 1,050 >= 1,000
       const { epochId, deadline } = await createEpoch(1000n);
       await submitAttestation(epochId, deadline, s.customer1, 400n);
@@ -132,32 +216,28 @@ describe("ProofOfReserves", function () {
       // Close the window.
       await time.increaseTo(Number(deadline) + 1);
 
-      // Anyone requests reveal — computes encrypted solvent bit, marks public.
-      await expect(por.connect(s.nobody).requestReveal(epochId))
+      // The accredited auditor requests reveal — computes the encrypted solvent
+      // bit, marks the VERDICT public, and ACL-grants the auditor the total.
+      await expect(por.connect(s.auditor).requestReveal(epochId))
         .to.emit(por, "RevealRequested")
-        .withArgs(epochId, s.nobody.address);
+        .withArgs(epochId, s.auditor.address)
+        .and.to.emit(por, "TotalAccessGranted")
+        .withArgs(epochId, s.auditor.address);
 
-      // Public decryption: total + solvent bit.
-      const totalHandle = ethers.hexlify(await por.getEncryptedTotal(epochId));
+      // Verdict-only public decryption (1 bit).
       const solventHandle = ethers.hexlify(await por.getEncryptedSolvent(epochId));
-      const result = await fhevm.publicDecrypt([totalHandle, solventHandle]);
+      const result = await fhevm.publicDecrypt([solventHandle]);
 
-      // Drive the on-chain callback — verifies KMS sigs, stores plaintext result.
       await expect(
         por
           .connect(s.nobody)
-          .fulfillPublicDecryption(
-            epochId,
-            [totalHandle, solventHandle],
-            result.abiEncodedClearValues,
-            result.decryptionProof,
-          ),
-      ).to.emit(por, "PublicDecryptionFulfilled");
+          .fulfillVerdict(epochId, [solventHandle], result.abiEncodedClearValues, result.decryptionProof),
+      ).to.emit(por, "VerdictFulfilled");
 
       const final = await por.getEpoch(epochId);
       expect(final.fulfilled).to.eq(true);
-      expect(final.revealedTotal).to.eq(1050n); // 400 + 350 + 300
       expect(final.solvent).to.eq(true); // 1,050 >= 1,000
+      expect(final.auditor).to.eq(s.auditor.address);
       expect(await por.isSolvent(epochId)).to.eq(true);
     });
   });
@@ -174,21 +254,66 @@ describe("ProofOfReserves", function () {
       await submitAttestation(epochId, deadline, s.customer2, 200n);
 
       await time.increaseTo(Number(deadline) + 1);
-      await por.requestReveal(epochId);
+      const solvent = await revealAndFulfill(epochId);
 
-      const totalHandle = ethers.hexlify(await por.getEncryptedTotal(epochId));
-      const solventHandle = ethers.hexlify(await por.getEncryptedSolvent(epochId));
-      const result = await fhevm.publicDecrypt([totalHandle, solventHandle]);
-
-      await por.fulfillPublicDecryption(
-        epochId,
-        [totalHandle, solventHandle],
-        result.abiEncodedClearValues,
-        result.decryptionProof,
-      );
-
-      expect((await por.getEpoch(epochId)).revealedTotal).to.eq(300n);
+      expect(solvent).to.eq(false);
       expect(await por.isSolvent(epochId)).to.eq(false);
+    });
+  });
+
+  describe("composable-privacy gate: auditor-scoped reveal", () => {
+    beforeEach(async () => {
+      await deployFixture();
+    });
+
+    it("non-accredited account cannot requestReveal", async () => {
+      const { epochId, deadline } = await createEpoch(1000n);
+      await submitAttestation(epochId, deadline, s.customer1, 500n);
+      await time.increaseTo(Number(deadline) + 1);
+      await expect(por.connect(s.nobody).requestReveal(epochId)).to.be.revertedWithCustomError(por, "NotAnAuditor");
+    });
+
+    it("a revoked credential blocks subsequent reveals", async () => {
+      const { epochId, deadline } = await createEpoch(1000n);
+      await submitAttestation(epochId, deadline, s.customer1, 500n);
+      await time.increaseTo(Number(deadline) + 1);
+
+      // Revoke the auditor mid-window.
+      await (await cred.connect(s.admin).revoke(s.auditor.address)).wait();
+
+      await expect(por.connect(s.auditor).requestReveal(epochId)).to.be.revertedWithCustomError(por, "NotAnAuditor");
+    });
+
+    it("verdict stays public-decryptable; total is NOT publicly decryptable", async () => {
+      // The composition's core privacy claim: only the verdict (1 bit) is ever
+      // made public. The aggregate total is never marked makePubliclyDecryptable
+      // — it is ACL-granted to the auditor alone for off-chain EIP-712
+      // user-decryption. We assert this at the contract level: fulfillVerdict
+      // accepts ONLY the verdict handle; passing the total handle reverts.
+      const { epochId, deadline } = await createEpoch(1000n);
+      await submitAttestation(epochId, deadline, s.customer1, 1500n); // 1,500 >= 1,000 -> solvent
+      await time.increaseTo(Number(deadline) + 1);
+      await por.connect(s.auditor).requestReveal(epochId);
+
+      // The verdict handle IS public and fulfillable.
+      const solventHandle = ethers.hexlify(await por.getEncryptedSolvent(epochId));
+      const verdictResult = await fhevm.publicDecrypt([solventHandle]);
+      await por
+        .connect(s.nobody)
+        .fulfillVerdict(epochId, [solventHandle], verdictResult.abiEncodedClearValues, verdictResult.decryptionProof);
+      expect(await por.isSolvent(epochId)).to.eq(true);
+
+      // The total handle can NEVER be the argument to fulfillVerdict — the
+      // contract enforces a 1-handle verdict-only callback. A second epoch
+      // proves the total handle is structurally excluded from public decryption.
+      const { epochId: e2, deadline: d2 } = await createEpoch(1000n);
+      await submitAttestation(e2, d2, s.customer2, 1500n);
+      await time.increaseTo(Number(d2) + 1);
+      await por.connect(s.auditor).requestReveal(e2);
+      const totalHandle2 = ethers.hexlify(await por.getEncryptedTotal(e2));
+      await expect(
+        por.fulfillVerdict(e2, [totalHandle2], "0x", "0x"),
+      ).to.be.revertedWithCustomError(por, "HandleMismatch");
     });
   });
 
@@ -235,41 +360,35 @@ describe("ProofOfReserves", function () {
 
     it("cannot reveal before the window closes", async () => {
       const { epochId } = await createEpoch(1000n);
-      await expect(por.requestReveal(epochId)).to.be.revertedWithCustomError(por, "EpochNotClosed");
+      await expect(por.connect(s.auditor).requestReveal(epochId)).to.be.revertedWithCustomError(por, "EpochNotClosed");
     });
 
     it("cannot fulfill before requestReveal", async () => {
       const { epochId, deadline } = await createEpoch(1000n);
       await submitAttestation(epochId, deadline, s.customer1, 500n);
       await time.increaseTo(Number(deadline) + 1);
-      await expect(
-        por.fulfillPublicDecryption(epochId, [ethers.ZeroHash, ethers.ZeroHash], "0x", "0x"),
-      ).to.be.revertedWithCustomError(por, "NotRevealed");
+      await expect(por.fulfillVerdict(epochId, [ethers.ZeroHash], "0x", "0x")).to.be.revertedWithCustomError(
+        por,
+        "NotRevealed",
+      );
     });
 
     it("cannot fulfill twice", async () => {
       const { epochId, deadline } = await createEpoch(1000n);
       await submitAttestation(epochId, deadline, s.customer1, 500n);
       await time.increaseTo(Number(deadline) + 1);
-      await por.requestReveal(epochId);
+      await por.connect(s.auditor).requestReveal(epochId);
 
-      const totalHandle = ethers.hexlify(await por.getEncryptedTotal(epochId));
       const solventHandle = ethers.hexlify(await por.getEncryptedSolvent(epochId));
-      const result = await fhevm.publicDecrypt([totalHandle, solventHandle]);
+      const result = await fhevm.publicDecrypt([solventHandle]);
 
-      await por.fulfillPublicDecryption(
-        epochId,
-        [totalHandle, solventHandle],
-        result.abiEncodedClearValues,
-        result.decryptionProof,
-      );
+      await por
+        .connect(s.nobody)
+        .fulfillVerdict(epochId, [solventHandle], result.abiEncodedClearValues, result.decryptionProof);
       await expect(
-        por.fulfillPublicDecryption(
-          epochId,
-          [totalHandle, solventHandle],
-          result.abiEncodedClearValues,
-          result.decryptionProof,
-        ),
+        por
+          .connect(s.nobody)
+          .fulfillVerdict(epochId, [solventHandle], result.abiEncodedClearValues, result.decryptionProof),
       ).to.be.revertedWithCustomError(por, "AlreadyFulfilled");
     });
 
@@ -277,11 +396,12 @@ describe("ProofOfReserves", function () {
       const { epochId, deadline } = await createEpoch(1000n);
       await submitAttestation(epochId, deadline, s.customer1, 500n);
       await time.increaseTo(Number(deadline) + 1);
-      await por.requestReveal(epochId);
+      await por.connect(s.auditor).requestReveal(epochId);
 
-      const totalHandle = ethers.hexlify(await por.getEncryptedTotal(epochId));
+      const solventHandle = ethers.hexlify(await por.getEncryptedSolvent(epochId));
+      // Two handles where one is expected, second is garbage.
       await expect(
-        por.fulfillPublicDecryption(epochId, [totalHandle, ethers.ZeroHash], "0x", "0x"),
+        por.fulfillVerdict(epochId, [solventHandle, ethers.ZeroHash], "0x", "0x"),
       ).to.be.revertedWithCustomError(por, "HandleMismatch");
     });
   });
@@ -462,19 +582,28 @@ describe("ProofOfReserves", function () {
   // ---------------------------------------------------------------------------
   // End-to-end validation of the one-key demo model that `scripts/setup.sh`
   // deploys (admin == signer == deployer). Proves the seed/reveal flow the
-  // setup script runs is sound. Kept here (not a standalone script) because the
-  // FHEVM mock coprocessor initializes within the mocha runner.
+  // setup script runs is sound, now with the composable-privacy auditor gate.
+  // Kept here (not a standalone script) because the FHEVM mock coprocessor
+  // initializes within the mocha runner.
   // ---------------------------------------------------------------------------
-  describe("one-key demo flow (setup.sh model)", () => {
-    it("deploys admin==signer, seeds an epoch, reveals, and proves solvent", async () => {
+  describe("one-key demo flow (setup.sh model, auditor-gated)", () => {
+    it("deploys admin==signer, accredits an auditor, seeds, reveals, and proves solvent", async () => {
+      const cf = (await ethers.getContractFactory("AuditorCredential")) as AuditorCredential__factory;
+      cred = await cf.deploy(s.admin.address);
+      await cred.waitForDeployment();
+      credAddr = await cred.getAddress();
+
       const f = (await ethers.getContractFactory("ProofOfReserves")) as ProofOfReserves__factory;
-      // admin == exchangeSigner == deployer (the one-key model).
-      por = await f.deploy(s.admin.address, s.admin.address);
+      // admin == exchangeSigner == deployer == registrar (the one-key model).
+      por = await f.deploy(s.admin.address, s.admin.address, credAddr);
       await por.waitForDeployment();
       porAddr = await por.getAddress();
 
       expect(await por.exchangeAdmin()).to.eq(s.admin.address);
       expect(await por.exchangeSigner()).to.eq(s.admin.address);
+
+      // Accredit the demo auditor.
+      await (await cred.connect(s.admin).accredit(s.auditor.address)).wait();
 
       const { epochId, deadline } = await createEpoch(1_000_000n);
       // In the one-key model the exchangeSigner IS admin, so sign with admin
@@ -494,22 +623,22 @@ describe("ProofOfReserves", function () {
       }
 
       await time.increaseTo(Number(deadline) + 1);
-      await por.requestReveal(epochId);
+      // The auditor (not "anyone") drives the reveal.
+      await por.connect(s.auditor).requestReveal(epochId);
 
-      const totalHandle = await por.getEncryptedTotal(epochId);
       const solventHandle = await por.getEncryptedSolvent(epochId);
-      const result = await fhevm.publicDecrypt([totalHandle, solventHandle]);
-      await por.fulfillPublicDecryption(
+      const result = await fhevm.publicDecrypt([solventHandle]);
+      await por.fulfillVerdict(
         epochId,
-        [totalHandle, solventHandle],
+        [solventHandle],
         result.abiEncodedClearValues,
         result.decryptionProof,
       );
 
       const info = await por.getEpoch(epochId);
       expect(info.attestationCount).to.eq(3n);
-      expect(info.revealedTotal).to.eq(1_050_000n);
       expect(info.solvent).to.eq(true); // 1.05M >= 1M liabilities
+      expect(info.auditor).to.eq(s.auditor.address);
     });
   });
 });

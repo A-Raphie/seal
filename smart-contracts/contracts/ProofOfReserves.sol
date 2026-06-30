@@ -5,6 +5,7 @@ import {FHE, euint64, ebool, externalEuint64} from "@fhevm/solidity/lib/FHE.sol"
 import {ZamaEthereumConfig} from "@fhevm/solidity/config/ZamaConfig.sol";
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
+import {AuditorCredential} from "./AuditorCredential.sol";
 
 /**
  * @title  ProofOfReserves
@@ -18,20 +19,33 @@ import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/Messa
  *           2. Customers submit (ciphertext, proof, signature) on-chain. The
  *              contract verifies the exchange's signature and homomorphically
  *              adds the ciphertext to a running encrypted total.
- *           3. After the attestation window closes, anyone calls
+ *           3. After the attestation window closes, an ACCREDITED auditor calls
  *              `requestReveal()`. The contract computes the encrypted solvency
- *              bit `ge(total, claimedLiabilities)` and marks both the total
- *              and the bit as PUBLICLY decryptable.
- *           4. Anyone triggers public decryption via the FHEVM gateway; the
- *              threshold-decrypted result is verified on-chain in
- *              `fulfillPublicDecryption()` via KMS signatures.
+ *              bit `ge(total, claimedLiabilities)`, marks the 1-bit verdict as
+ *              PUBLICLY decryptable, and grants THAT auditor alone handle-access
+ *              to the aggregate total via `FHE.allow(total, auditor)`.
+ *           4. The verdict is threshold-decrypted publicly and verified on-chain
+ *              in `fulfillVerdict()`. The aggregate total is NEVER revealed
+ *              on-chain: the auditor reads it off-chain via the EIP-712
+ *              user-decryption flow (`userDecrypt`).
+ *
+ *         COMPOSABLE PRIVACY (Zama Season 3 theme). Decryption rights are split:
+ *           - The 1-bit solvency VERDICT is a public good — anyone can learn
+ *             whether the exchange is solvent.
+ *           - The aggregate reserve TOTAL is commercially sensitive — only an
+ *             auditor holding an `AuditorCredential` (ERC-721, soulbound) may
+ *             decrypt it, and only off-chain via EIP-712 user-decryption. The
+ *             grant is composed from the credential: `requestReveal` checks
+ *             `auditorCredential.balanceOf(msg.sender) > 0` before calling
+ *             `FHE.allow(encryptedTotal, msg.sender)`.
  *
  *         TRUST MODEL — no operator is ever in the trust path:
  *           - Individual customer balances are NEVER decryptable by anyone
  *             (ACL: `allowThis` only). They are only ever homomorphically summed.
- *           - Only the aggregate total + the 1-bit solvency result are ever
- *             decrypted, and only publicly, only after the window closes.
- *           - The solvency bit is computed on-chain over ciphertexts; the
+ *           - The aggregate total is decryptable ONLY by an accredited auditor,
+ *             off-chain; it is never settled as plaintext on-chain.
+ *           - The solvency VERDICT is the only plaintext ever written on-chain,
+ *             and it is computed on-chain over ciphertexts (`FHE.ge`); the
  *             operator cannot influence it. This is the difference vs. the
  *             predecessor "SealedBid" design which settled with operator-
  *             supplied plaintexts.
@@ -45,10 +59,10 @@ contract ProofOfReserves is ZamaEthereumConfig {
         uint64 deadline;
         euint64 encryptedTotal;
         ebool encryptedSolvent;
-        uint64 revealedTotal;
         bool solvent;
-        bool revealed; // requestReveal() called
-        bool fulfilled; // public decryption result stored
+        bool revealed; // requestReveal() called by an accredited auditor
+        bool fulfilled; // public verdict decryption stored
+        address auditor; // the auditor who drove requestReveal (may decrypt total off-chain)
         uint256 attestationCount;
     }
 
@@ -70,6 +84,9 @@ contract ProofOfReserves is ZamaEthereumConfig {
     address public immutable exchangeAdmin;
     /// @notice Off-chain key that signs each balance attestation (cold key).
     address public immutable exchangeSigner;
+    /// @notice Soulbound ERC-721 credential. Only its holders may drive
+    ///         `requestReveal` and decrypt an epoch's aggregate total.
+    AuditorCredential public immutable auditorCredential;
 
     uint256 public nextEpochId;
 
@@ -86,8 +103,12 @@ contract ProofOfReserves is ZamaEthereumConfig {
 
     event EpochCreated(uint256 indexed epochId, uint64 claimedLiabilities, uint64 deadline);
     event AttestationRegistered(uint256 indexed epochId, address indexed customer, bytes32 indexed attHash);
-    event RevealRequested(uint256 indexed epochId, address indexed revealer);
-    event PublicDecryptionFulfilled(uint256 indexed epochId, uint64 revealedTotal, bool solvent);
+    event RevealRequested(uint256 indexed epochId, address indexed auditor);
+    /// @notice The aggregate total handle was ACL-granted to an auditor for off-chain
+    ///         EIP-712 user-decryption. The plaintext is never written on-chain.
+    event TotalAccessGranted(uint256 indexed epochId, address indexed auditor);
+    /// @notice The 1-bit solvency verdict was publicly decrypted and stored.
+    event VerdictFulfilled(uint256 indexed epochId, bool solvent);
     event ChallengeSubmitted(uint256 indexed epochId, address indexed customer, address indexed challenger);
     event FraudProven(uint256 indexed epochId, address indexed customer, address indexed challenger);
     event ChallengeRejected(uint256 indexed epochId, address indexed customer);
@@ -102,6 +123,7 @@ contract ProofOfReserves is ZamaEthereumConfig {
     error AttestationAlreadyUsed();
     error InvalidSignature();
     error NotExchangeAdmin();
+    error NotAnAuditor();
     error HandleMismatch();
     error ZeroAddress();
 
@@ -110,10 +132,13 @@ contract ProofOfReserves is ZamaEthereumConfig {
         _;
     }
 
-    constructor(address _exchangeAdmin, address _exchangeSigner) {
-        if (_exchangeAdmin == address(0) || _exchangeSigner == address(0)) revert ZeroAddress();
+    constructor(address _exchangeAdmin, address _exchangeSigner, address _auditorCredential) {
+        if (_exchangeAdmin == address(0) || _exchangeSigner == address(0) || _auditorCredential == address(0)) {
+            revert ZeroAddress();
+        }
         exchangeAdmin = _exchangeAdmin;
         exchangeSigner = _exchangeSigner;
+        auditorCredential = AuditorCredential(_auditorCredential);
     }
 
     // -------------------------------------------------------------------------------------------
@@ -186,8 +211,14 @@ contract ProofOfReserves is ZamaEthereumConfig {
     }
 
     /**
-     * @notice After the window closes, compute the encrypted solvency bit on-chain
-     *         and mark the total + bit as publicly decryptable. Callable by anyone.
+     * @notice After the window closes, an ACCREDITED auditor computes the
+     *         encrypted solvency bit on-chain. The 1-bit VERDICT is marked
+     *         publicly decryptable; the aggregate TOTAL is ACL-granted to that
+     *         auditor alone (off-chain EIP-712 user-decryption).
+     *
+     *         Composable privacy: decryption rights are composed from the
+     *         caller's `AuditorCredential` (ERC-721). A non-accredited caller
+     *         is rejected before any FHE work happens.
      *
      *         This is the trustless core: the contract decides solvency over
      *         ciphertexts; no operator supplies a plaintext result.
@@ -198,28 +229,39 @@ contract ProofOfReserves is ZamaEthereumConfig {
         if (block.timestamp < e.deadline) revert EpochNotClosed();
         if (e.revealed) revert AlreadyFulfilled();
 
+        // Composition gate: only an accredited auditor may drive the reveal.
+        if (auditorCredential.balanceOf(msg.sender) == 0) revert NotAnAuditor();
+
         e.encryptedSolvent = FHE.ge(e.encryptedTotal, FHE.asEuint64(e.claimedLiabilities));
 
-        // Mark both the aggregate total and the 1-bit solvency result as
-        // PUBLICLY decryptable. Anyone can then drive the decryption via the
-        // gateway; the result is verified on-chain in fulfillPublicDecryption().
-        FHE.makePubliclyDecryptable(e.encryptedTotal);
+        // The 1-bit verdict is a public good — anyone may learn solvency.
         FHE.makePubliclyDecryptable(e.encryptedSolvent);
 
+        // The aggregate total is commercially sensitive — grant THIS auditor
+        // alone handle-access for off-chain EIP-712 user-decryption. The total
+        // is never settled as plaintext on-chain.
+        FHE.allow(e.encryptedTotal, msg.sender);
+
+        e.auditor = msg.sender;
         e.revealed = true;
         emit RevealRequested(epochId, msg.sender);
+        emit TotalAccessGranted(epochId, msg.sender);
     }
 
     /**
-     * @notice Public-decryption callback. Verifies the KMS threshold signatures
-     *         over the decrypted cleartexts and stores the result on-chain.
+     * @notice Public-decryption callback for the 1-bit solvency VERDICT. Verifies
+     *         the KMS threshold signature and stores the boolean on-chain.
      *         Callable by anyone (a keeper, the auditor UI, etc.).
      *
-     * @param handlesList         [encryptedTotal, encryptedSolvent] handles.
-     * @param abiEncodedCleartexts abi.encode(uint64 total, bool solvent).
+     *         Note: only the verdict (1 bit) is decrypted here. The aggregate
+     *         total stays encrypted on-chain forever; the auditor reads it
+     *         off-chain via EIP-712 user-decryption.
+     *
+     * @param handlesList         [encryptedSolvent] single handle.
+     * @param abiEncodedCleartexts abi.encode(bool solvent).
      * @param decryptionProof     KMS public-decryption proof.
      */
-    function fulfillPublicDecryption(
+    function fulfillVerdict(
         uint256 epochId,
         bytes32[] calldata handlesList,
         bytes calldata abiEncodedCleartexts,
@@ -229,21 +271,19 @@ contract ProofOfReserves is ZamaEthereumConfig {
         if (!e.revealed) revert NotRevealed();
         if (e.fulfilled) revert AlreadyFulfilled();
 
-        bytes32 totalHandle = euint64.unwrap(e.encryptedTotal);
         bytes32 solventHandle = ebool.unwrap(e.encryptedSolvent);
-        if (handlesList.length != 2 || handlesList[0] != totalHandle || handlesList[1] != solventHandle) {
+        if (handlesList.length != 1 || handlesList[0] != solventHandle) {
             revert HandleMismatch();
         }
 
-        // Reverts if KMS signatures are invalid; emits PublicDecryptionVerified on success.
+        // Reverts if KMS signatures are invalid.
         FHE.checkSignatures(handlesList, abiEncodedCleartexts, decryptionProof);
 
-        (uint64 total, bool solvent) = abi.decode(abiEncodedCleartexts, (uint64, bool));
-        e.revealedTotal = total;
+        bool solvent = abi.decode(abiEncodedCleartexts, (bool));
         e.solvent = solvent;
         e.fulfilled = true;
 
-        emit PublicDecryptionFulfilled(epochId, total, solvent);
+        emit VerdictFulfilled(epochId, solvent);
     }
 
     // -------------------------------------------------------------------------------------------
@@ -358,10 +398,10 @@ contract ProofOfReserves is ZamaEthereumConfig {
         returns (
             uint64 claimedLiabilities,
             uint64 deadline,
-            uint64 revealedTotal,
             bool solvent,
             bool revealed,
             bool fulfilled,
+            address auditor,
             uint256 attestationCount
         )
     {
@@ -369,12 +409,19 @@ contract ProofOfReserves is ZamaEthereumConfig {
         return (
             e.claimedLiabilities,
             e.deadline,
-            e.revealedTotal,
             e.solvent,
             e.revealed,
             e.fulfilled,
+            e.auditor,
             e.attestationCount
         );
+    }
+
+    /// @notice The auditor who drove `requestReveal` for an epoch (address(0) if
+    ///         not yet revealed). Only this address holds the EIP-712
+    ///         user-decryption grant for the aggregate total.
+    function getAuditor(uint256 epochId) external view returns (address) {
+        return _epochs[epochId].auditor;
     }
 
     function getEncryptedTotal(uint256 epochId) external view returns (euint64) {
