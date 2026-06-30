@@ -1,4 +1,7 @@
+"use client";
+
 import Link from "next/link";
+import { useReadContracts } from "wagmi";
 import { Shell } from "@/components/Shell";
 import {
   AlertIcon,
@@ -7,12 +10,77 @@ import {
   SigmaIcon,
   KeyIcon,
   CheckIcon,
+  XIcon,
 } from "@/components/icons";
+import { proofOfReservesABI } from "@/lib/abi";
+import { PROOF_OF_RESERVES_ADDRESS, IS_UNDEPLOYED } from "@/lib/contract";
+
+// getEpoch returns: (liabilities, deadline, solvent, revealed, fulfilled, auditor, attCount)
+type EpochTuple = readonly [
+  bigint, // claimedLiabilities
+  bigint, // deadline
+  boolean, // solvent
+  boolean, // revealed
+  boolean, // fulfilled
+  `0x${string}`, // auditor
+  bigint, // attestationCount
+];
+
+/**
+ * Reads epoch 0's live state from Sepolia so the hero diagram reflects the real,
+ * deployed contract — not hardcoded demo numbers. Falls back to illustrative
+ * values only when the contract isn't deployed or the read is still loading.
+ */
+function useLiveEpoch0() {
+  const { data, isLoading } = useReadContracts({
+    contracts: [
+      {
+        address: PROOF_OF_RESERVES_ADDRESS,
+        abi: proofOfReservesABI,
+        functionName: "nextEpochId",
+      },
+      {
+        address: PROOF_OF_RESERVES_ADDRESS,
+        abi: proofOfReservesABI,
+        functionName: "getEpoch",
+        args: [0n],
+      },
+      {
+        address: PROOF_OF_RESERVES_ADDRESS,
+        abi: proofOfReservesABI,
+        functionName: "isFraudulent",
+        args: [0n],
+      },
+    ],
+    query: { enabled: !IS_UNDEPLOYED },
+  });
+
+  const hasEpoch = (() => {
+    const next = data?.[0].result;
+    if (next === undefined) return false;
+    return BigInt(next) > 0n;
+  })();
+  const epoch = (hasEpoch ? data?.[1].result : undefined) as EpochTuple | undefined;
+  const fraudulent = hasEpoch ? (data?.[2].result as boolean | undefined) : undefined;
+
+  return {
+    isLoading: isLoading || (!IS_UNDEPLOYED && data === undefined),
+    hasEpoch,
+    liabilities: epoch?.[0],
+    solvent: epoch?.[2],
+    revealed: epoch?.[3],
+    fulfilled: epoch?.[4],
+    attestationCount: epoch?.[6],
+    fraudulent,
+  };
+}
 
 export default function Home() {
+  const live = useLiveEpoch0();
+
   return (
     <Shell>
-      {/* ── Hero: split layout — pitch left, animated flow diagram right ── */}
+      {/* ── Hero: split layout — pitch left, live flow diagram right ── */}
       <section className="grid items-center gap-10 lg:grid-cols-2 lg:gap-16">
         {/* Left: pitch */}
         <div>
@@ -45,8 +113,8 @@ export default function Home() {
           </p>
         </div>
 
-        {/* Right: the composition, visualized */}
-        <FlowDiagram />
+        {/* Right: the composition, visualized — reading LIVE epoch 0 */}
+        <FlowDiagram live={live} />
       </section>
 
       {/* ── The composable split — color-coded by the two-accent system ── */}
@@ -61,7 +129,6 @@ export default function Home() {
           </div>
         </div>
         <div className="grid gap-4 md:grid-cols-3">
-          {/* Per-balance: violet (encrypted, never readable) */}
           <div className="card rail-accent">
             <div className="mb-3 flex items-center gap-2 text-accent">
               <LockIcon className="text-xl" aria-hidden />
@@ -78,7 +145,6 @@ export default function Home() {
             </p>
           </div>
 
-          {/* Verdict: cyan (public) */}
           <div className="card rail-cyan">
             <div className="mb-3 flex items-center gap-2 text-cyan">
               <CheckIcon className="text-xl" aria-hidden />
@@ -93,7 +159,6 @@ export default function Home() {
             </p>
           </div>
 
-          {/* Total: violet (auditor-gated) */}
           <div className="card rail-accent">
             <div className="mb-3 flex items-center gap-2 text-accent">
               <KeyIcon className="text-xl" aria-hidden />
@@ -187,43 +252,94 @@ export default function Home() {
   );
 }
 
+type LiveEpoch = ReturnType<typeof useLiveEpoch0>;
+
 /**
- * The composition, visualized as an animated flow — pure CSS/SVG, no deps.
- *   3 encrypted balances → Σ (homomorphic sum) → SOLVENT verdict (cyan, pulses)
+ * The composition, visualized as an animated flow — now reading LIVE epoch 0.
+ *   N encrypted balances → Σ (homomorphic sum) → verdict (live: pending/SOLVENT/INSOLVENT)
  *   the TOTAL sits behind an auditor gate (violet, shimmer)
  * Reduced-motion: the @media rule in globals.css neutralizes the animations.
+ *
+ * When still loading or undeployed, shows illustrative placeholders so the
+ * diagram is never empty. Once live data arrives, every number reflects the
+ * real on-chain state.
  */
-function FlowDiagram() {
-  const balances = [
-    { label: "400k", delay: "0s" },
-    { label: "350k", delay: "0.8s" },
-    { label: "300k", delay: "1.6s" },
-  ];
+function FlowDiagram({ live }: { live: LiveEpoch }) {
+  const { isLoading, hasEpoch, attestationCount, liabilities, revealed, fulfilled, solvent, fraudulent } = live;
+
+  // Render N balance chips based on the real attestation count (cap at 4 for layout).
+  const chipCount = hasEpoch && attestationCount !== undefined
+    ? Math.min(Number(attestationCount), 4)
+    : 3; // illustrative fallback
+  const chips = Array.from({ length: chipCount }, (_, i) => ({
+    delay: `${i * 0.8}s`,
+  }));
+
+  // Live verdict state.
+  const verdictLabel = !hasEpoch || !fulfilled
+    ? "pending"
+    : fraudulent
+      ? "FRAUD"
+      : solvent
+        ? "SOLVENT"
+        : "INSOLVENT";
+  const verdictTone = !fulfilled
+    ? "muted"
+    : fraudulent
+      ? "danger"
+      : solvent
+        ? "cyan"
+        : "warning";
+
+  const reservesLabel = hasEpoch && liabilities !== undefined
+    ? `Σ ≥ ${formatCompact(liabilities)}`
+    : "Σ = ?";
+
   return (
     <div
       className="relative mx-auto w-full max-w-md"
       role="img"
-      aria-label="Flow diagram: three encrypted balances sum into a solvent verdict (public), while the aggregate total is locked behind an auditor gate."
+      aria-label={`Flow diagram reading live Sepolia state: ${chipCount} encrypted attestations sum into a reserve total, with a ${verdictLabel} verdict.`}
     >
       <div className="card overflow-visible p-6">
+        {/* Live-status pill */}
+        <div className="mb-4 flex items-center justify-between">
+          <span className="text-[11px] uppercase tracking-wide text-muted-foreground">
+            epoch 0
+          </span>
+          <span className="badge border-line bg-black/30">
+            <span
+              className={`h-1.5 w-1.5 rounded-full ${
+                isLoading ? "bg-muted animate-pulse" : hasEpoch ? "bg-success" : "bg-muted"
+              }`}
+              aria-hidden
+            />
+            {isLoading ? "reading Sepolia…" : hasEpoch ? "live on Sepolia" : "not deployed"}
+          </span>
+        </div>
+
         {/* Encrypted balances column */}
         <div className="space-y-2.5">
-          {balances.map((b) => (
-            <div key={b.label} className="relative flex items-center gap-3">
+          {chips.map((c, i) => (
+            <div key={i} className="relative flex items-center gap-3">
               <span className="flex h-9 w-9 items-center justify-center rounded-lg border border-accent/30 bg-accent/10 text-accent">
                 <LockIcon aria-hidden />
               </span>
               <span className="flex-1 rounded-lg border border-line bg-black/30 px-3 py-2 font-mono text-sm text-muted">
-                encrypted · {b.label}
+                encrypted balance #{i + 1}
               </span>
-              {/* traveling dot */}
               <span
                 className="absolute right-10 top-1/2 h-1.5 w-1.5 -translate-y-1/2 rounded-full bg-accent animate-flow-dot"
-                style={{ animationDelay: b.delay }}
+                style={{ animationDelay: c.delay }}
                 aria-hidden
               />
             </div>
           ))}
+          {hasEpoch && attestationCount !== undefined && Number(attestationCount) > 4 && (
+            <p className="pl-12 text-xs text-muted-foreground">
+              +{Number(attestationCount) - 4} more attestations
+            </p>
+          )}
         </div>
 
         {/* Connector down to Σ */}
@@ -236,44 +352,95 @@ function FlowDiagram() {
           <div className="flex items-center gap-2 rounded-xl border border-line-strong bg-surface-2 px-5 py-2.5 shadow-glow-accent">
             <SigmaIcon className="text-lg text-accent" aria-hidden />
             <span className="font-mono text-sm font-medium text-foreground">
-              FHE.add → 1.05M
+              FHE.add · {reservesLabel}
             </span>
           </div>
         </div>
 
-        {/* Two outputs: verdict (cyan, public) + total (violet, gated) */}
+        {/* Two outputs: verdict (live) + total (violet, gated) */}
         <div className="grid grid-cols-2 gap-3">
-          <div className="rounded-xl border border-cyan/40 bg-cyan/5 p-3 text-center">
-            <div className="mb-1 text-[11px] uppercase tracking-wide text-cyan/80">
-              verdict · public
-            </div>
-            <div className="flex items-center justify-center gap-1.5 font-mono text-sm font-semibold text-cyan">
-              <CheckIcon aria-hidden /> SOLVENT
+          <div
+            className={`rounded-xl border p-3 text-center transition ${
+              verdictTone === "cyan"
+                ? "border-cyan/40 bg-cyan/5"
+                : verdictTone === "warning"
+                  ? "border-warning/40 bg-warning/5"
+                  : verdictTone === "danger"
+                    ? "border-danger/40 bg-danger/5"
+                    : "border-line bg-black/20"
+            }`}
+          >
+            <div
+              className={`mb-1 text-[11px] uppercase tracking-wide ${
+                verdictTone === "cyan"
+                  ? "text-cyan/80"
+                  : verdictTone === "warning"
+                    ? "text-warning/80"
+                    : verdictTone === "danger"
+                      ? "text-danger/80"
+                      : "text-muted-foreground"
+              }`}
+            >
+              verdict · {!fulfilled ? "pending reveal" : "public"}
             </div>
             <div
-              className="mx-auto mt-2 h-1.5 w-10 rounded-full bg-cyan/40 animate-verdict-pulse"
-              aria-hidden
-            />
+              className={`flex items-center justify-center gap-1.5 font-mono text-sm font-semibold ${
+                verdictTone === "cyan"
+                  ? "text-cyan"
+                  : verdictTone === "warning"
+                    ? "text-warning"
+                    : verdictTone === "danger"
+                      ? "text-danger"
+                      : "text-muted"
+              }`}
+            >
+              {fulfilled && solvent && !fraudulent && <CheckIcon aria-hidden />}
+              {fulfilled && !solvent && !fraudulent && <XIcon aria-hidden />}
+              {verdictLabel}
+            </div>
+            {verdictTone === "cyan" && (
+              <div
+                className="mx-auto mt-2 h-1.5 w-10 rounded-full bg-cyan/40 animate-verdict-pulse"
+                aria-hidden
+              />
+            )}
           </div>
+
           <div className="relative rounded-xl border border-accent/40 bg-accent/5 p-3 text-center">
             <div className="mb-1 text-[11px] uppercase tracking-wide text-accent/80">
-              total · gated
+              total · {!revealed ? "encrypted" : "gated"}
             </div>
             <div className="flex items-center justify-center gap-1.5 font-mono text-sm font-semibold text-accent">
-              <KeyIcon className="animate-gate-shimmer" aria-hidden /> 1.05M
+              <KeyIcon className="animate-gate-shimmer" aria-hidden /> auditor-only
             </div>
             <div className="mt-2 text-[10px] text-muted-foreground">
-              auditor ERC-721 only
+              {hasEpoch && liabilities !== undefined
+                ? `≥ ${formatCompact(liabilities)}`
+                : "ERC-721 gated"}
             </div>
           </div>
         </div>
       </div>
 
-      {/* Caption */}
       <p className="mt-3 text-center text-xs text-muted-foreground">
-        The aggregate is real — proven on-chain. The individual balances never
-        decrypt.
+        {hasEpoch
+          ? "Reading live on-chain state — the aggregate is real, individual balances never decrypt."
+          : "Illustrative diagram — deploys live once the contract is seeded."}
       </p>
     </div>
   );
+}
+
+/** Compact integer formatting for big numbers (1000000 -> 1M, 1050000 -> 1.05M). */
+function formatCompact(n: bigint): string {
+  const num = Number(n);
+  if (num >= 1_000_000) {
+    const m = num / 1_000_000;
+    return `${Number.isInteger(m) ? m : m.toFixed(2)}M`;
+  }
+  if (num >= 1_000) {
+    const k = num / 1_000;
+    return `${Number.isInteger(k) ? k : k.toFixed(1)}k`;
+  }
+  return num.toString();
 }
