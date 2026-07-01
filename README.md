@@ -13,8 +13,9 @@ Built for the [Zama Developer Program — Mainnet Season 3, Builder Track](https
 - **Live site:** _TODO — Vercel URL_
 - **3-min pitch:** _TODO — video URL (real-person pitch, no AI voice)_
 - **X thread:** _TODO_
-- **ProofOfReserves (Sepolia):** [0xF95799D4E3D634Ce42107ff7496F3D48371b35cc](https://sepolia.etherscan.io/address/0xF95799D4E3D634Ce42107ff7496F3D48371b35cc)
-- **AuditorCredential (Sepolia):** [0xd3a4350a4E3a4b9BE4e1Ef5f7AFB267b8B7A8BfA](https://sepolia.etherscan.io/address/0xd3a4350a4E3a4b9BE4e1Ef5f7AFB267b8B7A8BfA)
+- **ProofOfReservesFactory (Sepolia):** [0x95fd86974bbbDBf7a69c5b269f17Eb1a0BdA0690](https://sepolia.etherscan.io/address/0x95fd86974bbbDBf7a69c5b269f17Eb1a0BdA0690)
+- **Exchange #0 — ProofOfReserves (Sepolia):** [0x9182cEF09299906bDb9Af5bD705135d06675018F](https://sepolia.etherscan.io/address/0x9182cEF09299906bDb9Af5bD705135d06675018F) *(registered via the factory, cUSDC-denominated)*
+- **Exchange #0 — AuditorCredential (Sepolia):** [0x56e66a35925aEf86D48C85D9222A1cD6dDa3B25b](https://sepolia.etherscan.io/address/0x56e66a35925aEf86D48C85D9222A1cD6dDa3B25b)
 
 ---
 
@@ -149,12 +150,13 @@ result is derived, not attested — trustless, not trust-the-prover.
 ```
 fhe-proof-of-reserves/
 ├── smart-contracts/        Solidity 0.8.27 + @fhevm/solidity (Hardhat)
-│   ├── contracts/ProofOfReserves.sol           core: encrypted attestations + auditor-gated reveal
+│   ├── contracts/ProofOfReserves.sol           core: token-denominated encrypted attestations + auditor-gated reveal
+│   ├── contracts/ProofOfReservesFactory.sol    onboards exchanges — deploys an isolated (PoR + credential) pair per exchange
 │   ├── contracts/AuditorCredential.sol         soulbound ERC-721 (composable-privacy gate)
-│   └── test/ProofOfReserves.test.ts            (26 tests, all green)
+│   └── test/ProofOfReserves.test.ts            (35 tests, all green)
 ├── packages/
 │   ├── frontend/          Next.js 15 · wagmi v2 · RainbowKit · @zama-fhe/react-sdk
-│   │   ├── app/(exchange|customer|audit)       3-pane dApp
+│   │   ├── app/(onboard|exchange|customer|audit)  4-pane dApp + onboarding flow
 │   │   └── app/api/exchange/sign               server-held exchange signing key
 │   │   └── app/api/relayer/[...path]           self-hosted relayer proxy
 │   └── exchange-cli/      Node back-office tool (sign · create-epoch)
@@ -171,20 +173,38 @@ fhe-proof-of-reserves/
 
 ---
 
-## Smart contracts — `ProofOfReserves` + `AuditorCredential`
+## Smart contracts — `ProofOfReservesFactory` + `ProofOfReserves` + `AuditorCredential`
 
-Solidity 0.8.27, `evmVersion: cancun`, `viaIR: true`. Both inherit / use `ZamaEthereumConfig`.
+Solidity 0.8.27, `evmVersion: cancun`, `viaIR: true`. All inherit / use `ZamaEthereumConfig`.
 
-### `ProofOfReserves`
+### `ProofOfReservesFactory` (multi-exchange onboarding)
+
+Any deployer can register an exchange; each registration deploys a fresh,
+isolated `(AuditorCredential, ProofOfReserves)` pair so every exchange gets its
+own attestation contract, auditor registry, and reserve token. The factory
+enforces `admin != signer` so a hot-key compromise can't forge attestations.
 
 | Function | Purpose |
 |----------|---------|
-| `createEpoch(liabilities, window)` | exchange admin publishes a liabilities claim + opens the attestation window |
-| `registerAttestation(epochId, enc, proof, sig)` | customer submits their exchange-signed encrypted balance; contract verifies sig, `FHE.add`s into the epoch total |
+| `registerExchange(admin, exchangeSigner)` | deploys a new isolated PoR + credential pair for an exchange; emits `ExchangeRegistered` |
+| `getExchange(exchangeId)` / `exchangeCount()` | read the onboarded-exchange directory |
+
+### `ProofOfReserves` (per-exchange, token-denominated)
+
+| Function | Purpose |
+|----------|---------|
+| `createEpoch(token, decimals, liabilities, window)` | exchange admin declares the reserve token (e.g. cUSDC) + liabilities + opens the attestation window |
+| `registerAttestation(epochId, enc, proof, sig)` | customer submits their exchange-signed encrypted balance; contract verifies sig (token-bound), `FHE.add`s into the epoch total |
 | `requestReveal(epochId)` | **accredited auditor only**: computes `FHE.ge(total, liabilities)`, marks the verdict public, `FHE.allow`s the total to the auditor |
 | `fulfillVerdict(epochId, handles, cleartexts, proof)` | verifies KMS signatures (`FHE.checkSignatures`), stores the 1-bit solvency verdict on-chain |
 | `challengeConflictingAttestation(...)` | customer proves the exchange signed two ciphertexts encrypting *different* values via `FHE.ne`; epoch flagged fraudulent if proven |
 | `isSolvent(epochId)` / `isFraudulent(epochId)` / `getAuditor(epochId)` | public views |
+
+**Token denomination.** The attestation hash binds the token: a cUSDC
+attestation cannot be replayed as a cUSDT one. The contract doesn't read token
+balances on-chain (Option B) — that would collapse per-customer aggregation and
+break the fraud challenge. Denominating attestations in real token units makes
+the claim real ("proving solvency in cUSDC") without re-architecting the proof.
 
 ### `AuditorCredential` (composable-privacy primitive)
 
@@ -199,7 +219,7 @@ off-chain. The registrar accredits (`accredit`) and can revoke (`revoke`);
 | `revoke(auditor)` | registrar burns the credential — auditor loses all decryption rights |
 | `isAuditor(account)` / `balanceOf(account)` | the gate `requestReveal` checks |
 
-Verified on Sepolia: [ProofOfReserves](https://sepolia.etherscan.io/address/0xF95799D4E3D634Ce42107ff7496F3D48371b35cc#code) · [AuditorCredential](https://sepolia.etherscan.io/address/0xd3a4350a4E3a4b9BE4e1Ef5f7AFB267b8B7A8BfA#code)
+Verified on Sepolia: [Factory](https://sepolia.etherscan.io/address/0x95fd86974bbbDBf7a69c5b269f17Eb1a0BdA0690) · [Exchange #0 PoR](https://sepolia.etherscan.io/address/0x9182cEF09299906bDb9Af5bD705135d06675018F#code) · [Exchange #0 Credential](https://sepolia.etherscan.io/address/0x56e66a35925aEf86D48C85D9222A1cD6dDa3B25b#code)
 
 ---
 
@@ -219,7 +239,7 @@ pnpm install
 
 ### 2. Run the contract tests
 ```bash
-pnpm --filter smart-contracts test     # 26 tests, ~600ms
+pnpm --filter smart-contracts test     # 35 tests, ~1s
 ```
 
 ### 3. Deploy to Sepolia + seed demo data (one command)
