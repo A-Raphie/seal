@@ -216,6 +216,18 @@ export default function Home() {
         <h2 className="mb-5 text-xl font-bold">Choose your role</h2>
         <div className="grid gap-4 md:grid-cols-3">
           <Link
+            href="/onboard"
+            className="card border-accent/30 transition hover:border-accent/60 hover:shadow-glow-accent"
+            aria-label="Onboard a new exchange"
+          >
+            <h3 className="font-semibold text-accent">Onboard</h3>
+            <p className="mt-0.5 text-xs text-muted-foreground">stand up an exchange</p>
+            <p className="mt-2.5 text-sm text-muted">
+              Register a new exchange to get its own isolated contracts and
+              reserve token. The first step for any operator.
+            </p>
+          </Link>
+          <Link
             href="/exchange"
             className="card transition hover:border-accent/40 hover:shadow-glow-accent"
             aria-label="Open the Exchange back-office"

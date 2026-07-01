@@ -8,6 +8,7 @@ import { Logo } from "./icons";
 
 const links = [
   { href: "/", label: "Overview" },
+  { href: "/onboard", label: "Onboard" },
   { href: "/exchange", label: "Exchange" },
   { href: "/customer", label: "Customer" },
   { href: "/audit", label: "Auditor" },
