@@ -57,6 +57,8 @@ contract ProofOfReserves is ZamaEthereumConfig {
     struct Epoch {
         uint64 claimedLiabilities;
         uint64 deadline;
+        address token; // the confidential token (e.g. cUSDC) this epoch is denominated in
+        uint8 decimals; // token decimals, for off-chain display only
         euint64 encryptedTotal;
         ebool encryptedSolvent;
         bool solvent;
@@ -101,7 +103,13 @@ contract ProofOfReserves is ZamaEthereumConfig {
     ///         result is then considered invalid.
     mapping(uint256 => bool) public epochFraudulent;
 
-    event EpochCreated(uint256 indexed epochId, uint64 claimedLiabilities, uint64 deadline);
+    event EpochCreated(
+        uint256 indexed epochId,
+        address indexed token,
+        uint64 claimedLiabilities,
+        uint64 deadline,
+        uint8 decimals
+    );
     event AttestationRegistered(uint256 indexed epochId, address indexed customer, bytes32 indexed attHash);
     event RevealRequested(uint256 indexed epochId, address indexed auditor);
     /// @notice The aggregate total handle was ACL-granted to an auditor for off-chain
@@ -126,6 +134,7 @@ contract ProofOfReserves is ZamaEthereumConfig {
     error NotAnAuditor();
     error HandleMismatch();
     error ZeroAddress();
+    error ZeroToken(); // createEpoch requires a non-zero token denomination
 
     modifier onlyExchangeAdmin() {
         if (msg.sender != exchangeAdmin) revert NotExchangeAdmin();
@@ -148,16 +157,26 @@ contract ProofOfReserves is ZamaEthereumConfig {
     /**
      * @notice Publish a new attestation window. Only the exchange admin may do this,
      *         since `claimedLiabilities` is the exchange's own solvency claim.
+     * @param token           The confidential token (e.g. cUSDC) this epoch is
+     *                        denominated in. Bound into the attestation hash so a
+     *                        cUSDC attestation cannot be replayed as a cUSDT one.
+     * @param decimals        Token decimals (display-only; the contract arithmetic
+     *                        is unit-agnostic).
      */
     function createEpoch(
+        address token,
+        uint8 decimals,
         uint64 claimedLiabilities,
         uint64 windowSeconds
     ) external onlyExchangeAdmin returns (uint256 epochId) {
+        if (token == address(0)) revert ZeroToken();
         unchecked {
             epochId = nextEpochId;
             ++nextEpochId;
         }
         Epoch storage e = _epochs[epochId];
+        e.token = token;
+        e.decimals = decimals;
         e.claimedLiabilities = claimedLiabilities;
         e.deadline = uint64(block.timestamp) + windowSeconds;
 
@@ -166,7 +185,7 @@ contract ProofOfReserves is ZamaEthereumConfig {
         FHE.allowThis(zero);
         e.encryptedTotal = zero;
 
-        emit EpochCreated(epochId, claimedLiabilities, e.deadline);
+        emit EpochCreated(epochId, token, claimedLiabilities, e.deadline, decimals);
     }
 
     /**
@@ -191,8 +210,8 @@ contract ProofOfReserves is ZamaEthereumConfig {
         if (e.deadline == 0) revert EpochNotFound();
         if (block.timestamp >= e.deadline) revert EpochNotOpen();
 
-        // The exchange commits to the exact ciphertext + customer + epoch off-chain.
-        bytes32 attHash = _hashAttestation(epochId, msg.sender, encryptedBalance, e.deadline);
+        // The exchange commits to the exact ciphertext + customer + epoch + token off-chain.
+        bytes32 attHash = _hashAttestation(epochId, e.token, msg.sender, encryptedBalance, e.deadline);
         if (attestationUsed[attHash]) revert AttestationAlreadyUsed();
 
         bytes32 ethSigned = MessageHashUtils.toEthSignedMessageHash(attHash);
@@ -322,12 +341,12 @@ contract ProofOfReserves is ZamaEthereumConfig {
         bytes32 key = keccak256(abi.encodePacked(epochId, customer));
         if (_challenges[key].challenger != address(0)) revert AlreadyChallenged();
 
-        // Verify both signatures bind (epochId, customer, ciphertext, deadline).
+        // Verify both signatures bind (epochId, token, customer, ciphertext, deadline).
         bytes32 ethA = MessageHashUtils.toEthSignedMessageHash(
-            _hashAttestation(epochId, customer, ciphertextA, e.deadline)
+            _hashAttestation(epochId, e.token, customer, ciphertextA, e.deadline)
         );
         bytes32 ethB = MessageHashUtils.toEthSignedMessageHash(
-            _hashAttestation(epochId, customer, ciphertextB, e.deadline)
+            _hashAttestation(epochId, e.token, customer, ciphertextB, e.deadline)
         );
         if (ethA.recover(signatureA) != exchangeSigner) revert InvalidSignature();
         if (ethB.recover(signatureB) != exchangeSigner) revert InvalidSignature();
@@ -396,6 +415,8 @@ contract ProofOfReserves is ZamaEthereumConfig {
         external
         view
         returns (
+            address token,
+            uint8 decimals,
             uint64 claimedLiabilities,
             uint64 deadline,
             bool solvent,
@@ -407,6 +428,8 @@ contract ProofOfReserves is ZamaEthereumConfig {
     {
         Epoch storage e = _epochs[epochId];
         return (
+            e.token,
+            e.decimals,
             e.claimedLiabilities,
             e.deadline,
             e.solvent,
@@ -458,17 +481,27 @@ contract ProofOfReserves is ZamaEthereumConfig {
     // -------------------------------------------------------------------------------------------
 
     /**
-     * @dev Attestation hash. The exchange CLI MUST reproduce this exactly when signing.
-     *      Bindings: epochId (replay scope), customer (who may submit), the ciphertext
-     *      handle (prevents swapping in an inflated balance), and the deadline
-     *      (window scope).
+     * @dev Attestation hash. The exchange CLI / frontend MUST reproduce this exactly
+     *      when signing. Bindings: epochId (replay scope), token (denomination — a
+     *      cUSDC attestation cannot be replayed as a cUSDT one), customer (who may
+     *      submit), the ciphertext handle (prevents swapping in an inflated balance),
+     *      and the deadline (window scope).
+     *
+     *      ⚠ There are TWO off-chain copies of this packing that MUST stay in sync:
+     *        - packages/frontend/lib/attestation.ts (hashAttestation)
+     *        - smart-contracts/test/ProofOfReserves.test.ts (signAttestation)
+     *      A cross-copy sync test guards against drift.
      */
     function _hashAttestation(
         uint256 epochId,
+        address token,
         address customer,
         externalEuint64 encryptedBalance,
         uint64 deadline
     ) internal pure returns (bytes32) {
-        return keccak256(abi.encodePacked(epochId, customer, externalEuint64.unwrap(encryptedBalance), deadline));
+        return
+            keccak256(
+                abi.encodePacked(epochId, token, customer, externalEuint64.unwrap(encryptedBalance), deadline)
+            );
     }
 }
