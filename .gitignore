@@ -39,3 +39,4 @@ pnpm-debug.log*
 
 # Frontend
 .vercel
+.env*
