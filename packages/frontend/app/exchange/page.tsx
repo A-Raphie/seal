@@ -23,7 +23,7 @@ export default function ExchangePage() {
   const { address, isConnected } = useAccount();
   const { writeContractAsync, isPending } = useWriteContract();
   const [liabilities, setLiabilities] = useState("");
-  const [windowSeconds, setWindowSeconds] = useState("3600");
+  const [windowHours, setWindowHours] = useState("1");
   const [token, setToken] = useState<TokenInfo>(SEPOLIA_TOKENS[0]);
   const [auditorAddr, setAuditorAddr] = useState("");
   const [txHash, setTxHash] = useState<string | null>(null);
@@ -65,7 +65,8 @@ export default function ExchangePage() {
 
   // Live validation.
   const liabValid = isValidUint(liabilities);
-  const windowValid = isValidUint(windowSeconds);
+  const windowValid = isValidUint(windowHours);
+  const windowSeconds = BigInt(windowHours) * 3600n;
   const canSubmit = liabValid && windowValid && !isPending;
   const auditorAddrValid = /^0x[a-fA-F0-9]{40}$/.test(auditorAddr);
   const canAccredit = auditorAddrValid && !isPending;
@@ -79,7 +80,7 @@ export default function ExchangePage() {
         address: PROOF_OF_RESERVES_ADDRESS,
         abi: proofOfReservesABI,
         functionName: "createEpoch",
-        args: [token.address, token.decimals, BigInt(liabilities), BigInt(windowSeconds)],
+        args: [token.address, token.decimals, BigInt(liabilities), windowSeconds],
       });
       setTxHash(hash);
       setLiabilities("");
@@ -203,13 +204,13 @@ export default function ExchangePage() {
                 </div>
                 <div>
                   <label className="label" htmlFor={liabId}>
-                    Claimed liabilities ({token.symbol} units)
+                    Claimed liabilities ({token.symbol})
                   </label>
                   <input
                     id={liabId}
                     className="input font-mono"
                     type="text"
-                    inputMode="numeric"
+                    inputMode="decimal"
                     placeholder="e.g. 1000000"
                     value={liabilities}
                     onChange={(e) => setLiabilities(e.target.value)}
@@ -224,18 +225,19 @@ export default function ExchangePage() {
                 </div>
                 <div>
                   <label className="label" htmlFor={windowId}>
-                    Attestation window (seconds)
+                    Attestation window
                   </label>
-                  <input
+                  <select
                     id={windowId}
-                    className="input font-mono"
-                    type="text"
-                    inputMode="numeric"
-                    placeholder="3600"
-                    value={windowSeconds}
-                    onChange={(e) => setWindowSeconds(e.target.value)}
-                    aria-invalid={windowSeconds.length > 0 && !windowValid}
-                  />
+                    className="input"
+                    value={windowHours}
+                    onChange={(e) => setWindowHours(e.target.value)}
+                  >
+                    <option value="1">1 hour</option>
+                    <option value="6">6 hours</option>
+                    <option value="24">24 hours</option>
+                    <option value="168">7 days</option>
+                  </select>
                 </div>
                 <button
                   className="btn-primary w-full"
@@ -318,8 +320,8 @@ export default function ExchangePage() {
       </div>
 
       <p className="mt-6 text-xs text-muted-foreground">
-        Note: &ldquo;liabilities&rdquo; here is denominated in plain balance
-        units. In production this would be a token amount.
+        Amounts are denominated in the selected token&rsquo;s smallest unit
+        (e.g. micro-cUSDC for 6 decimals).
       </p>
     </Shell>
   );

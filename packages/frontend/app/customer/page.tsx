@@ -173,13 +173,13 @@ export default function CustomerPage() {
                 </div>
                 <div>
                   <label className="label" htmlFor={balanceInput}>
-                    Your balance (units)
+                    Your balance
                   </label>
                   <input
                     id={balanceInput}
                     className="input font-mono"
                     type="text"
-                    inputMode="numeric"
+                    inputMode="decimal"
                     placeholder="e.g. 4200"
                     value={balance}
                     onChange={(e) => setBalance(e.target.value)}
