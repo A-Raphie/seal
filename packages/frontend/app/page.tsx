@@ -3,17 +3,14 @@
 import Link from "next/link";
 import { useReadContracts } from "wagmi";
 import { Shell } from "@/components/Shell";
+import { CheckIcon, XIcon, KeyIcon, LockIcon } from "@/components/icons";
+import { proofOfReservesABI, proofOfReservesFactoryABI } from "@/lib/abi";
 import {
-  AlertIcon,
-  LockIcon,
-  ShieldIcon,
-  SigmaIcon,
-  KeyIcon,
-  CheckIcon,
-  XIcon,
-} from "@/components/icons";
-import { proofOfReservesABI } from "@/lib/abi";
-import { PROOF_OF_RESERVES_ADDRESS, IS_UNDEPLOYED } from "@/lib/contract";
+  PROOF_OF_RESERVES_ADDRESS,
+  FACTORY_ADDRESS,
+  IS_UNDEPLOYED,
+  tokenInfo,
+} from "@/lib/contract";
 
 // getEpoch returns: (token, decimals, liabilities, deadline, solvent, revealed, fulfilled, auditor, attCount)
 type EpochTuple = readonly [
@@ -28,490 +25,264 @@ type EpochTuple = readonly [
   bigint, // attestationCount
 ];
 
+export default function Home() {
+  return (
+    <Shell>
+      {/* ── Brand strip (compact, not a pitch) ── */}
+      <div className="mb-8 flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-center">
+        <div>
+          <h1 className="font-display text-4xl font-bold tracking-tight sm:text-5xl">
+            <span className="text-gradient">Ciphra</span>
+          </h1>
+          <p className="mt-1 text-sm text-muted">
+            Confidential Proof-of-Reserves. Exchanges prove solvency in real
+            tokens — without revealing a single balance.
+          </p>
+        </div>
+        <Link href="/onboard" className="btn-primary shrink-0">
+          Onboard an exchange
+          <span aria-hidden>→</span>
+        </Link>
+      </div>
+
+      {/* ── The product: a live verdict board ── */}
+      <VerdictBoard />
+
+      {/* ── One-line how (not four cards) ── */}
+      <section className="mt-12" aria-label="How it works">
+        <div className="grid gap-4 sm:grid-cols-3">
+          <div className="flex items-center gap-3 rounded-xl border border-accent/20 bg-accent/[0.04] px-4 py-3">
+            <LockIcon className="shrink-0 text-lg text-accent" aria-hidden />
+            <p className="text-sm text-muted">
+              <span className="font-semibold text-foreground">Balances stay encrypted.</span>{" "}
+              Summed under FHE, never decrypted by anyone.
+            </p>
+          </div>
+          <div className="flex items-center gap-3 rounded-xl border border-cyan/20 bg-cyan/[0.04] px-4 py-3">
+            <CheckIcon className="shrink-0 text-lg text-cyan" aria-hidden />
+            <p className="text-sm text-muted">
+              <span className="font-semibold text-foreground">Verdict is public.</span>{" "}
+              Solvent or not — anyone can verify on-chain.
+            </p>
+          </div>
+          <div className="flex items-center gap-3 rounded-xl border border-accent/20 bg-accent/[0.04] px-4 py-3">
+            <KeyIcon className="shrink-0 text-lg text-accent" aria-hidden />
+            <p className="text-sm text-muted">
+              <span className="font-semibold text-foreground">Total is auditor-gated.</span>{" "}
+              Only a credentialed auditor reads the number.
+            </p>
+          </div>
+        </div>
+        <p className="mt-4 text-center text-xs text-muted-foreground">
+          Built on the{" "}
+          <a
+            href="https://docs.zama.org/protocol"
+            target="_blank"
+            rel="noreferrer"
+            className="underline hover:text-foreground"
+          >
+            Zama Protocol
+          </a>{" "}
+          · Sepolia testnet · composable privacy for Zama Season 3
+        </p>
+      </section>
+    </Shell>
+  );
+}
+
 /**
- * Reads epoch 0's live state from Sepolia so the hero diagram reflects the real,
- * deployed contract — not hardcoded demo numbers. Falls back to illustrative
- * values only when the contract isn't deployed or the read is still loading.
+ * The verdict board — the actual product. Reads all factory-registered exchanges
+ * + their epoch-0 solvency state live from Sepolia. This is what a visitor sees
+ * first: real exchanges, real tokens, real verdicts. Not a diagram.
  */
-function useLiveEpoch0() {
-  const { data, isLoading } = useReadContracts({
+function VerdictBoard() {
+  // How many exchanges are registered?
+  const { data: countData, isLoading: countLoading } = useReadContracts({
     contracts: [
       {
-        address: PROOF_OF_RESERVES_ADDRESS,
-        abi: proofOfReservesABI,
-        functionName: "nextEpochId",
+        address: FACTORY_ADDRESS,
+        abi: proofOfReservesFactoryABI,
+        functionName: "exchangeCount",
       },
+    ],
+    query: { enabled: !IS_UNDEPLOYED },
+  });
+  const count = countData?.[0].result ? Number(countData[0].result) : 0;
+
+  // Read each exchange's deployed PoR address.
+  const ids = Array.from({ length: count }, (_, i) => BigInt(i));
+  const { data: exchanges } = useReadContracts({
+    contracts: ids.map((id) => ({
+      address: FACTORY_ADDRESS,
+      abi: proofOfReservesFactoryABI,
+      functionName: "getExchange" as const,
+      args: [id] as const,
+    })),
+    query: { enabled: count > 0 },
+  });
+
+  // For each exchange, read epoch 0's solvency state.
+  const porAddresses = (exchanges ?? [])
+    .map((res) => {
+      const ex = res.result as readonly [`0x${string}`, `0x${string}`, `0x${string}`, bigint] | undefined;
+      return ex?.[1]; // the PoR address
+    })
+    .filter((a): a is `0x${string}` => !!a);
+
+  const { data: epochs } = useReadContracts({
+    contracts: porAddresses.map((addr) => ({
+      address: addr,
+      abi: proofOfReservesABI,
+      functionName: "getEpoch" as const,
+      args: [0n] as const,
+    })),
+    query: { enabled: porAddresses.length > 0 },
+  });
+
+  // Also read the standalone bootstrap PoR (the pre-factory demo exchange) as
+  // exchange "-1" so the board is never empty even before the factory is used.
+  const { data: bootstrapEpoch } = useReadContracts({
+    contracts: [
       {
         address: PROOF_OF_RESERVES_ADDRESS,
         abi: proofOfReservesABI,
         functionName: "getEpoch",
         args: [0n],
       },
-      {
-        address: PROOF_OF_RESERVES_ADDRESS,
-        abi: proofOfReservesABI,
-        functionName: "isFraudulent",
-        args: [0n],
-      },
     ],
     query: { enabled: !IS_UNDEPLOYED },
   });
 
-  const hasEpoch = (() => {
-    const next = data?.[0].result;
-    if (next === undefined) return false;
-    return BigInt(next) > 0n;
-  })();
-  const epoch = (hasEpoch ? data?.[1].result : undefined) as EpochTuple | undefined;
-  const fraudulent = hasEpoch ? (data?.[2].result as boolean | undefined) : undefined;
-
-  return {
-    isLoading: isLoading || (!IS_UNDEPLOYED && data === undefined),
-    hasEpoch,
-    token: epoch?.[0],
-    decimals: epoch?.[1],
-    liabilities: epoch?.[2],
-    solvent: epoch?.[4],
-    revealed: epoch?.[5],
-    fulfilled: epoch?.[6],
-    attestationCount: epoch?.[8],
-    fraudulent,
+  type BoardRow = {
+    key: string;
+    name: string;
+    token: `0x${string}`;
+    liabilities: bigint;
+    solvent: boolean;
+    fulfilled: boolean;
+    revealed: boolean;
+    attestationCount: bigint;
   };
-}
 
-export default function Home() {
-  const live = useLiveEpoch0();
+  const rows: BoardRow[] = [];
+
+  // Bootstrap exchange (the seeded demo).
+  if (bootstrapEpoch?.[0].result) {
+    const e = bootstrapEpoch[0].result as EpochTuple;
+    if (e[2] > 0n) {
+      rows.push({
+        key: "bootstrap",
+        name: "Demo Exchange",
+        token: e[0],
+        liabilities: e[2],
+        solvent: e[4],
+        fulfilled: e[6],
+        revealed: e[5],
+        attestationCount: e[8],
+      });
+    }
+  }
+
+  // Factory exchanges.
+  for (let i = 0; i < porAddresses.length; i++) {
+    const ep = epochs?.[i]?.result as EpochTuple | undefined;
+    const ex = exchanges?.[i]?.result as readonly [`0x${string}`, `0x${string}`, `0x${string}`, bigint] | undefined;
+    if (!ep || !ex) continue;
+    if (ep[2] === 0n) continue; // no epoch yet
+    rows.push({
+      key: `factory-${i}`,
+      name: `Exchange #${i}`,
+      token: ep[0],
+      liabilities: ep[2],
+      solvent: ep[4],
+      fulfilled: ep[6],
+      revealed: ep[5],
+      attestationCount: ep[8],
+    });
+  }
 
   return (
-    <Shell>
-      {/* ── Hero: split layout — pitch left, live flow diagram right ── */}
-      <section className="grid items-center gap-8 lg:grid-cols-2 lg:gap-16">
-        {/* Left: pitch */}
-        <div>
-          <div className="badge mb-5 border-accent/30 bg-accent/10 text-accent">
-            <span className="h-1.5 w-1.5 rounded-full bg-accent" aria-hidden />
-            Composable Privacy · Zama Season 3
-          </div>
-          <h1 className="text-hero font-bold">
-            Prove solvency.
-            <br />
-            <span className="text-gradient">Without revealing a balance.</span>
-          </h1>
-          <p className="mt-5 max-w-xl text-base text-muted">
-            A confidential Proof-of-Reserves on the Zama Protocol. An exchange
-            proves its reserves exceed its liabilities — homomorphically summed,
-            trustlessly revealed, denominated in real tokens like cUSDC. The 1-bit
-            verdict is public; the total is decryptable only by a credentialed
-            auditor.
-          </p>
-          <div className="mt-8 flex flex-wrap items-center gap-3">
-            <Link href="/audit" className="btn-primary">
-              Explore the demo — Auditor view
-              <span aria-hidden>→</span>
-            </Link>
-            <Link href="/onboard" className="btn-ghost">
-              Onboard an exchange
-            </Link>
-          </div>
-          <p className="mt-3 text-xs text-muted-foreground">
-            No wallet needed to view epochs and solvency results · Sepolia testnet
-          </p>
-        </div>
-
-        {/* Right: the composition, visualized */}
-        <FlowDiagram live={live} />
-      </section>
-
-      {/* ── Get started in 4 steps — the guided path ── */}
-      <section className="mt-16" aria-label="Get started in 4 steps">
-        <h2 className="mb-5 text-xl font-bold">Get started in 4 steps</h2>
-        <ol className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <Step
-            n={1}
-            href="/onboard"
-            title="Onboard an exchange"
-            body="Register via the factory — get your own isolated contracts. ~10 seconds."
+    <section aria-label="Live solvency verdicts" aria-live="polite">
+      <div className="mb-3 flex items-center justify-between">
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+          Live verdicts
+        </h2>
+        <span className="badge border-line bg-black/30">
+          <span
+            className={`h-1.5 w-1.5 rounded-full ${countLoading ? "bg-muted animate-pulse" : "bg-success"}`}
+            aria-hidden
           />
-          <Step
-            n={2}
-            href="/exchange"
-            title="Open an epoch"
-            body="Choose a reserve token (cUSDC), publish liabilities, accredit an auditor."
-          />
-          <Step
-            n={3}
-            href="/customer"
-            title="Submit attestations"
-            body="Customers submit encrypted balances — summed under encryption, never read."
-          />
-          <Step
-            n={4}
-            href="/audit"
-            title="Reveal the verdict"
-            body="An accredited auditor drives the reveal. The 1-bit solvency verdict lands on-chain."
-          />
-        </ol>
-      </section>
-
-      {/* ── The composable split — color-coded by the two-accent system ── */}
-      <section className="mt-20" aria-label="The composable-privacy split">
-        <div className="mb-6 flex items-end justify-between gap-4">
-          <div>
-            <h2 className="text-2xl font-bold">Who can decrypt what</h2>
-            <p className="mt-1 text-sm text-muted">
-              Decryption rights are composed from an on-chain credential — not
-              left open to anyone.
-            </p>
-          </div>
-        </div>
-        <div className="grid gap-4 md:grid-cols-3">
-          <div className="card rail-accent">
-            <div className="mb-3 flex items-center gap-2 text-accent">
-              <LockIcon className="text-xl" aria-hidden />
-              <span className="badge border-accent/30 bg-accent/10 text-accent">
-                never readable
-              </span>
-            </div>
-            <p className="stat mb-1">🔒 per balance</p>
-            <p className="text-sm text-muted">
-              Each customer&rsquo;s balance gets{" "}
-              <code className="font-mono text-xs text-muted-foreground">FHE.allowThis</code>{" "}
-              only — permanently undecryptable, by anyone. Summed under
-              encryption, never read.
-            </p>
-          </div>
-
-          <div className="card rail-cyan">
-            <div className="mb-3 flex items-center gap-2 text-cyan">
-              <CheckIcon className="text-xl" aria-hidden />
-              <span className="badge border-cyan/30 bg-cyan/10 text-cyan">
-                public
-              </span>
-            </div>
-            <p className="stat mb-1 text-cyan">1-bit verdict</p>
-            <p className="text-sm text-muted">
-              &ldquo;Is the exchange solvent?&rdquo; — a public good. Anyone can
-              learn the answer once an auditor drives the reveal.
-            </p>
-          </div>
-
-          <div className="card rail-accent">
-            <div className="mb-3 flex items-center gap-2 text-accent">
-              <KeyIcon className="text-xl" aria-hidden />
-              <span className="badge border-accent/30 bg-accent/10 text-accent">
-                auditor-gated
-              </span>
-            </div>
-            <p className="stat mb-1">aggregate total</p>
-            <p className="text-sm text-muted">
-              The actual reserve number is commercially sensitive. Only a
-              soulbound ERC-721 credential holder can decrypt it, off-chain via
-              EIP-712.
-            </p>
-          </div>
-        </div>
-      </section>
-
-      {/* ── Why it's different — one tight row, not three redundant cards ── */}
-      <section className="mt-16" aria-label="Why it's different">
-        <div className="grid gap-4 md:grid-cols-3">
-          <div className="card flex items-start gap-3">
-            <AlertIcon className="mt-0.5 shrink-0 text-lg text-danger" aria-hidden />
-            <div>
-              <h3 className="text-sm font-semibold">Old PoR leaks balances</h3>
-              <p className="mt-1 text-sm text-muted">
-                Merkle leaves, signed statements — every approach in production
-                today exposes customer data.
-              </p>
-            </div>
-          </div>
-          <div className="card flex items-start gap-3">
-            <LockIcon className="mt-0.5 shrink-0 text-lg text-accent" aria-hidden />
-            <div>
-              <h3 className="text-sm font-semibold">FHE sums ciphertexts</h3>
-              <p className="mt-1 text-sm text-muted">
-                Each balance stays encrypted on-chain. The contract adds and
-                compares under encryption — no plaintext ever touched.
-              </p>
-            </div>
-          </div>
-          <div className="card flex items-start gap-3">
-            <ShieldIcon className="mt-0.5 shrink-0 text-lg text-success" aria-hidden />
-            <div>
-              <h3 className="text-sm font-semibold">No operator in the loop</h3>
-              <p className="mt-1 text-sm text-muted">
-                The verdict is computed on-chain over ciphertexts. Plus a
-                fraud-challenge path — all trustless.
-              </p>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* ── Role router ── */}
-      <section className="mt-16" aria-label="Choose your role">
-        <h2 className="mb-5 text-xl font-bold">Choose your role</h2>
-        <div className="grid gap-4 md:grid-cols-3">
-          <Link
-            href="/onboard"
-            className="card border-accent/30 transition hover:border-accent/60 hover:shadow-glow-accent"
-            aria-label="Onboard a new exchange"
-          >
-            <h3 className="font-semibold text-accent">Onboard</h3>
-            <p className="mt-0.5 text-xs text-muted-foreground">stand up an exchange</p>
-            <p className="mt-2.5 text-sm text-muted">
-              Register a new exchange to get its own isolated contracts and
-              reserve token. The first step for any operator.
-            </p>
-          </Link>
-          <Link
-            href="/exchange"
-            className="card transition hover:border-accent/40 hover:shadow-glow-accent"
-            aria-label="Open the Exchange back-office"
-          >
-            <h3 className="font-semibold">Exchange</h3>
-            <p className="mt-0.5 text-xs text-muted-foreground">for operators</p>
-            <p className="mt-2.5 text-sm text-muted">
-              Open an attestation epoch, publish a liabilities claim, accredit
-              auditors.
-            </p>
-          </Link>
-          <Link
-            href="/customer"
-            className="card transition hover:border-accent/40 hover:shadow-glow-accent"
-            aria-label="Open the Customer pane"
-          >
-            <h3 className="font-semibold">Customer</h3>
-            <p className="mt-0.5 text-xs text-muted-foreground">for customers</p>
-            <p className="mt-2.5 text-sm text-muted">
-              Submit your encrypted balance, or challenge a conflicting
-              attestation.
-            </p>
-          </Link>
-          <Link
-            href="/audit"
-            className="card border-cyan/30 transition hover:border-cyan/60 hover:shadow-glow-cyan"
-            aria-label="Open the Auditor view"
-          >
-            <h3 className="font-semibold text-cyan">Auditor</h3>
-            <p className="mt-0.5 text-xs text-muted-foreground">start here</p>
-            <p className="mt-2.5 text-sm text-muted">
-              Drive the reveal and verify each epoch&rsquo;s solvency verdict.
-            </p>
-          </Link>
-        </div>
-      </section>
-    </Shell>
-  );
-}
-
-type LiveEpoch = ReturnType<typeof useLiveEpoch0>;
-
-/** A numbered step in the "Get started in 4 steps" strip. */
-function Step({ n, href, title, body }: { n: number; href: string; title: string; body: string }) {
-  return (
-    <li>
-      <Link
-        href={href}
-        className="card flex h-full flex-col transition hover:border-accent/40 hover:shadow-glow-accent"
-        aria-label={`Step ${n}: ${title}`}
-      >
-        <span className="mb-3 flex h-8 w-8 items-center justify-center rounded-full bg-accent/15 font-mono text-sm font-bold text-accent">
-          {n}
+          {countLoading ? "reading Sepolia…" : "live on Sepolia"}
         </span>
-        <h3 className="text-sm font-semibold">{title}</h3>
-        <p className="mt-1 text-xs text-muted">{body}</p>
-      </Link>
-    </li>
-  );
-}
-
-/**
- * The composition, visualized as an animated flow — now reading LIVE epoch 0.
- *   N encrypted balances → Σ (homomorphic sum) → verdict (live: pending/SOLVENT/INSOLVENT)
- *   the TOTAL sits behind an auditor gate (violet, shimmer)
- * Reduced-motion: the @media rule in globals.css neutralizes the animations.
- *
- * When still loading or undeployed, shows illustrative placeholders so the
- * diagram is never empty. Once live data arrives, every number reflects the
- * real on-chain state.
- */
-function FlowDiagram({ live }: { live: LiveEpoch }) {
-  const { isLoading, hasEpoch, attestationCount, liabilities, revealed, fulfilled, solvent, fraudulent } = live;
-
-  // Render N balance chips based on the real attestation count (cap at 4 for layout).
-  const chipCount = hasEpoch && attestationCount !== undefined
-    ? Math.min(Number(attestationCount), 4)
-    : 3; // illustrative fallback
-  const chips = Array.from({ length: chipCount }, (_, i) => ({
-    delay: `${i * 0.8}s`,
-  }));
-
-  // Live verdict state.
-  const verdictLabel = !hasEpoch || !fulfilled
-    ? "pending"
-    : fraudulent
-      ? "FRAUD"
-      : solvent
-        ? "SOLVENT"
-        : "INSOLVENT";
-  const verdictTone = !fulfilled
-    ? "muted"
-    : fraudulent
-      ? "danger"
-      : solvent
-        ? "cyan"
-        : "warning";
-
-  const reservesLabel = hasEpoch && liabilities !== undefined
-    ? `Σ ≥ ${formatCompact(liabilities)}`
-    : "Σ = ?";
-
-  return (
-    <div
-      className="relative mx-auto w-full max-w-sm sm:max-w-md"
-      role="img"
-      aria-label={`Flow diagram reading live Sepolia state: ${chipCount} encrypted attestations sum into a reserve total, with a ${verdictLabel} verdict.`}
-    >
-      {/* Visually-hidden live-data text alternative for screen readers. */}
-      <p className="sr-only">
-        Epoch 0 status: {isLoading ? "loading" : hasEpoch ? "live on Sepolia" : "not deployed"}.
-        {hasEpoch && attestationCount !== undefined && ` ${Number(attestationCount)} encrypted attestations submitted.`}
-        {hasEpoch && liabilities !== undefined && ` Claimed liabilities: ${formatCompact(liabilities)}.`}
-        {fulfilled ? ` Verdict: ${verdictLabel}.` : " Verdict: pending reveal."}
-        The aggregate total is auditor-gated and not publicly decryptable.
-      </p>
-      <div className="card overflow-visible p-6">
-        {/* Live-status pill */}
-        <div className="mb-4 flex items-center justify-between">
-          <span className="text-[11px] uppercase tracking-wide text-muted-foreground">
-            epoch 0
-          </span>
-          <span className="badge border-line bg-black/30">
-            <span
-              className={`h-1.5 w-1.5 rounded-full ${
-                isLoading ? "bg-muted animate-pulse" : hasEpoch ? "bg-success" : "bg-muted"
-              }`}
-              aria-hidden
-            />
-            {isLoading ? "reading Sepolia…" : hasEpoch ? "live on Sepolia" : "not deployed"}
-          </span>
-        </div>
-
-        {/* Encrypted balances column */}
-        <div className="space-y-2.5">
-          {chips.map((c, i) => (
-            <div key={i} className="relative flex items-center gap-3">
-              <span className="flex h-9 w-9 items-center justify-center rounded-lg border border-accent/30 bg-accent/10 text-accent">
-                <LockIcon aria-hidden />
-              </span>
-              <span className="flex-1 rounded-lg border border-line bg-black/30 px-3 py-2 font-mono text-sm text-muted">
-                encrypted balance #{i + 1}
-              </span>
-              <span
-                className="absolute right-10 top-1/2 h-1.5 w-1.5 -translate-y-1/2 rounded-full bg-accent animate-flow-dot"
-                style={{ animationDelay: c.delay }}
-                aria-hidden
-              />
-            </div>
-          ))}
-          {hasEpoch && attestationCount !== undefined && Number(attestationCount) > 4 && (
-            <p className="pl-12 text-xs text-muted-foreground">
-              +{Number(attestationCount) - 4} more attestations
-            </p>
-          )}
-        </div>
-
-        {/* Connector down to Σ */}
-        <div className="my-3 flex justify-center" aria-hidden>
-          <div className="h-6 w-px bg-gradient-to-b from-accent/60 to-line" />
-        </div>
-
-        {/* Σ homomorphic-sum node */}
-        <div className="mb-3 flex justify-center">
-          <div className="flex items-center gap-2 rounded-xl border border-line-strong bg-surface-2 px-5 py-2.5 shadow-glow-accent">
-            <SigmaIcon className="text-lg text-accent" aria-hidden />
-            <span className="font-mono text-sm font-medium text-foreground">
-              FHE.add · {reservesLabel}
-            </span>
-          </div>
-        </div>
-
-        {/* Two outputs: verdict (live) + total (violet, gated) */}
-        <div className="grid grid-cols-2 gap-3">
-          <div
-            className={`rounded-xl border p-3 text-center transition ${
-              verdictTone === "cyan"
-                ? "border-cyan/40 bg-cyan/5"
-                : verdictTone === "warning"
-                  ? "border-warning/40 bg-warning/5"
-                  : verdictTone === "danger"
-                    ? "border-danger/40 bg-danger/5"
-                    : "border-line bg-black/20"
-            }`}
-          >
-            <div
-              className={`mb-1 text-[11px] uppercase tracking-wide ${
-                verdictTone === "cyan"
-                  ? "text-cyan/80"
-                  : verdictTone === "warning"
-                    ? "text-warning/80"
-                    : verdictTone === "danger"
-                      ? "text-danger/80"
-                      : "text-muted-foreground"
-              }`}
-            >
-              verdict · {!fulfilled ? "pending reveal" : "public"}
-            </div>
-            <div
-              className={`flex items-center justify-center gap-1.5 font-mono text-sm font-semibold ${
-                verdictTone === "cyan"
-                  ? "text-cyan"
-                  : verdictTone === "warning"
-                    ? "text-warning"
-                    : verdictTone === "danger"
-                      ? "text-danger"
-                      : "text-muted"
-              }`}
-            >
-              {fulfilled && solvent && !fraudulent && <CheckIcon aria-hidden />}
-              {fulfilled && !solvent && !fraudulent && <XIcon aria-hidden />}
-              {verdictLabel}
-            </div>
-            {verdictTone === "cyan" && (
-              <div
-                className="mx-auto mt-2 h-1.5 w-10 rounded-full bg-cyan/40 animate-verdict-pulse"
-                aria-hidden
-              />
-            )}
-          </div>
-
-          <div className="relative rounded-xl border border-accent/40 bg-accent/5 p-3 text-center">
-            <div className="mb-1 text-[11px] uppercase tracking-wide text-accent/80">
-              total · {!revealed ? "encrypted" : "gated"}
-            </div>
-            <div className="flex items-center justify-center gap-1.5 font-mono text-sm font-semibold text-accent">
-              <KeyIcon className="animate-gate-shimmer" aria-hidden /> auditor-only
-            </div>
-            <div className="mt-2 text-[10px] text-muted-foreground">
-              {hasEpoch && liabilities !== undefined
-                ? `≥ ${formatCompact(liabilities)}`
-                : "ERC-721 gated"}
-            </div>
-          </div>
-        </div>
       </div>
 
-      <p className="mt-3 text-center text-xs text-muted-foreground">
-        {hasEpoch
-          ? "Reading live on-chain state — the aggregate is real, individual balances never decrypt."
-          : "Illustrative diagram — deploys live once the contract is seeded."}
-      </p>
-    </div>
+      {rows.length === 0 ? (
+        <div className="card text-center">
+          <p className="text-sm text-muted">No exchanges with epochs yet.</p>
+          <Link href="/onboard" className="btn-primary mt-3">
+            Onboard the first exchange
+          </Link>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {rows.map((row) => {
+            const tok = tokenInfo(row.token);
+            return (
+              <Link
+                key={row.key}
+                href="/audit"
+                className={`card flex flex-col gap-3 transition hover:border-line-strong sm:flex-row sm:items-center sm:justify-between ${
+                  row.fulfilled
+                    ? row.solvent
+                      ? "rail-cyan"
+                      : "rail-danger"
+                    : "rail-accent"
+                }`}
+              >
+                {/* Left: identity */}
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="font-display text-lg font-semibold">{row.name}</span>
+                    <span className="badge border-line bg-black/30 font-mono normal-case">
+                      {tok.symbol}
+                    </span>
+                  </div>
+                  <div className="mt-1 text-xs text-muted">
+                    {row.attestationCount.toString()} encrypted attestations ·
+                    liabilities {formatCompact(row.liabilities)} {tok.symbol}
+                  </div>
+                </div>
+
+                {/* Right: the verdict */}
+                <div className="flex shrink-0 items-center gap-3">
+                  {row.fulfilled ? (
+                    <div className="flex items-center gap-2">
+                      {row.solvent ? (
+                        <span className="tag bg-success/15 text-success">
+                          <CheckIcon aria-hidden /> SOLVENT
+                        </span>
+                      ) : (
+                        <span className="tag bg-danger/15 text-danger">
+                          <XIcon aria-hidden /> INSOLVENT
+                        </span>
+                      )}
+                    </div>
+                  ) : row.revealed ? (
+                    <span className="tag bg-warning/15 text-warning">verdict pending</span>
+                  ) : (
+                    <span className="tag border-line text-muted">awaiting reveal</span>
+                  )}
+                </div>
+              </Link>
+            );
+          })}
+        </div>
+      )}
+    </section>
   );
 }
 
-/** Compact integer formatting for big numbers (1000000 -> 1M, 1050000 -> 1.05M). */
+/** Compact integer formatting (1000000 -> 1M). */
 function formatCompact(n: bigint): string {
   const num = Number(n);
   if (num >= 1_000_000) {

@@ -30,8 +30,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
           >
             <Logo size={28} />
             <span className="font-display text-lg font-bold tracking-tight">
-              <span className="text-gradient">FHE</span>{" "}
-              <span className="text-foreground">Proof-of-Reserves</span>
+              <span className="text-gradient">Ciphra</span>
             </span>
           </Link>
 
