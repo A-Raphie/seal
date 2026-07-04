@@ -22,7 +22,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
     <div className="relative min-h-screen">
       {/* Sticky frosted header — full-bleed bar, wide inner content */}
       <header className="sticky top-0 z-50 border-b border-line bg-bg/70 backdrop-blur-xl">
-        <div className="mx-auto flex max-w-screen-xl items-center justify-between gap-4 px-6 py-3.5">
+        <div className="flex items-center justify-between gap-4 px-6 py-3.5 lg:px-10">
           <Link
             href="/"
             className="flex items-center gap-2.5"
@@ -72,11 +72,11 @@ export function Shell({ children }: { children: React.ReactNode }) {
         Skip to content
       </a>
 
-      <main id="main" className="mx-auto max-w-screen-xl px-6 py-10">
+      <main id="main" className="px-6 py-10 lg:px-10">
         {children}
       </main>
 
-      <footer className="mx-auto max-w-screen-xl px-6 pb-10 pt-8">
+      <footer className="px-6 pb-10 pt-8 lg:px-10">
         <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1 border-t border-line pt-5 text-center text-xs text-muted">
           <span className="inline-flex items-center gap-1.5">
             <span className="h-1.5 w-1.5 rounded-full bg-warning" aria-hidden />
