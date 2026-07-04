@@ -77,34 +77,30 @@ export function Shell({ children }: { children: React.ReactNode }) {
       </main>
 
       <footer className="px-6 pb-10 pt-8 lg:px-10">
-        <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1 border-t border-line pt-5 text-center text-xs text-muted">
-          <span className="inline-flex items-center gap-1.5">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line pt-5 text-xs text-muted">
+          <div className="flex items-center gap-2">
             <span className="h-1.5 w-1.5 rounded-full bg-warning" aria-hidden />
-            Sepolia testnet demo
-          </span>
-          <span className="text-muted-foreground">·</span>
-          <span>values shown are not real assets</span>
-          <span className="text-muted-foreground">·</span>
-          <span>
-            Built on the{" "}
+            <span>Sepolia testnet</span>
+          </div>
+          <div className="flex items-center gap-4">
             <a
-              className="text-muted underline hover:text-foreground"
+              className="text-muted-foreground transition hover:text-foreground"
               href="https://docs.zama.org/protocol"
               target="_blank"
               rel="noreferrer"
             >
               Zama Protocol
             </a>
-          </span>
-          <span className="text-muted-foreground">·</span>
-          <a
-            className="text-muted underline hover:text-foreground"
-            href={REPO_URL}
-            target="_blank"
-            rel="noreferrer"
-          >
-            Source
-          </a>
+            <a
+              className="text-muted-foreground transition hover:text-foreground"
+              href={REPO_URL}
+              target="_blank"
+              rel="noreferrer"
+            >
+              Source
+            </a>
+          </div>
+        </div>
         </div>
       </footer>
     </div>
