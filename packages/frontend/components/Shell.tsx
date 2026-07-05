@@ -19,7 +19,7 @@ const REPO_URL = "https://github.com/A-Raphie/seal";
 export function Shell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   return (
-    <div className="relative min-h-screen">
+    <div className="relative flex min-h-screen flex-col">
       {/* Floating glass nav pill (winsznx pattern). */}
       <nav className="nav-pill" aria-label="Primary">
         <Link href="/" className="flex items-center gap-2.5" aria-label="Seal home">
@@ -69,16 +69,16 @@ export function Shell({ children }: { children: React.ReactNode }) {
         Skip to content
       </a>
 
-      <main id="main" className="px-6 pt-12 md:px-10 md:pt-16">
+      <main id="main" className="flex-1 px-6 pt-12 md:px-10 md:pt-16">
         {children}
       </main>
 
-      {/* Giant footer wordmark (winsznx pattern) — overlaps footer slightly. */}
-      <div className="footer-wordmark -mb-10" aria-hidden>
+      {/* Giant footer wordmark (winsznx pattern). */}
+      <div className="footer-wordmark" aria-hidden>
         SEAL
       </div>
 
-      <footer className="px-6 pb-8 pt-4 md:px-10">
+      <footer className="mt-auto px-6 pb-8 pt-4 md:px-10">
         <div className="flex items-center justify-center gap-2 border-t border-line pt-6 text-center text-xs text-muted">
           <span>
             Built on{" "}
