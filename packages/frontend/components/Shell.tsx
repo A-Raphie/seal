@@ -69,39 +69,38 @@ export function Shell({ children }: { children: React.ReactNode }) {
         Skip to content
       </a>
 
-      <main id="main" className="px-6 py-12 md:px-10 md:py-16">
+      <main id="main" className="px-6 pt-12 md:px-10 md:pt-16">
         {children}
       </main>
 
-      {/* Giant footer wordmark (winsznx pattern). */}
-      <div className="footer-wordmark" aria-hidden>
+      {/* Giant footer wordmark (winsznx pattern) — overlaps footer slightly. */}
+      <div className="footer-wordmark -mb-10" aria-hidden>
         SEAL
       </div>
 
-      <footer className="px-6 pb-10 pt-8 md:px-10">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line pt-5 text-xs text-muted">
-          <div className="flex items-center gap-2">
-            <span className="h-1.5 w-1.5 rounded-full bg-warning" aria-hidden />
-            <span>Sepolia testnet</span>
-          </div>
-          <div className="flex items-center gap-4">
+      <footer className="px-6 pb-8 pt-4 md:px-10">
+        <div className="flex items-center justify-center gap-2 border-t border-line pt-6 text-center text-xs text-muted">
+          <span>
+            Built on{" "}
             <a
               className="text-muted-foreground transition hover:text-foreground"
               href="https://docs.zama.org/protocol"
               target="_blank"
               rel="noreferrer"
             >
-              Zama Protocol
-            </a>
+              Zama FHEVM
+            </a>{" "}
+            by{" "}
             <a
               className="text-muted-foreground transition hover:text-foreground"
-              href={REPO_URL}
+              href="https://x.com/A_raphie"
               target="_blank"
               rel="noreferrer"
             >
-              Source
-            </a>
-          </div>
+              A_Raphie
+            </a>{" "}
+            · Sepolia testnet
+          </span>
         </div>
       </footer>
     </div>
