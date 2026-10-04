@@ -140,7 +140,7 @@ export default function AuditPage() {
   return (
     <Shell>
       <header className="mb-6">
-        <h1 className="text-3xl font-bold">Auditor</h1>
+        <h1 className="text-4xl font-bold">Auditor</h1>
         <p className="mt-1.5 max-w-2xl text-muted">
           Verify each epoch&rsquo;s solvency without seeing any individual
           balance. The 1-bit verdict is public; the aggregate total is
@@ -265,7 +265,7 @@ export default function AuditPage() {
                     </div>
 
                     {/* Right: actions / verdict */}
-                    <div className="flex flex-wrap items-center gap-3 sm:justify-end">
+                    <div className="flex flex-wrap items-center gap-3 border-t border-line pt-3 sm:border-t-0 sm:border-l sm:border-line sm:pl-5 sm:pt-0 sm:justify-end">
                       {!closed && deadline !== 0n && (
                         <span className="text-xs text-muted">window open</span>
                       )}

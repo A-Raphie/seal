@@ -44,6 +44,7 @@ export default function CustomerPage() {
   const [balance, setBalance] = useState("");
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [showChallenge, setShowChallenge] = useState(false);
 
   const epochIdInput = useId();
   const balanceInput = useId();
@@ -114,7 +115,7 @@ export default function CustomerPage() {
   return (
     <Shell>
       <header className="mb-6">
-        <h1 className="text-3xl font-bold">Customer</h1>
+        <h1 className="text-4xl font-bold">Customer</h1>
         <p className="mt-1.5 max-w-2xl text-muted">
           Submit your encrypted balance attestation. Your balance is encrypted in
           your browser and is <strong className="text-foreground">never</strong>{" "}
@@ -124,7 +125,7 @@ export default function CustomerPage() {
 
       {IS_UNDEPLOYED && <UndeployedBanner />}
 
-      <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+      <div className="flex flex-col gap-5">
         {/* Submit attestation */}
         <div className="card">
           <h2 className="mb-1 flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
@@ -209,23 +210,35 @@ export default function CustomerPage() {
           </NetworkGuard>
         </div>
 
-        {/* Fraud challenge */}
-        <div className="card rail-danger">
-          <h2 className="mb-1 flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-            <AlertIcon className="text-base text-danger" aria-hidden />
-            Fraud challenge
-          </h2>
-          <p className="mb-3 text-xs text-muted-foreground">
-            If the exchange signed two different balances for you, prove it
-            on-chain — revealing only a 1-bit &ldquo;they differ&rdquo; flag.
-          </p>
-          <NetworkGuard>
-            {isConnected ? (
-              <ChallengeForm epochId={epochId} deadline={deadline} token={epochToken ?? "0x0000000000000000000000000000000000000000"} />
-            ) : (
-              <p className="text-sm text-muted">Connect your wallet to file a challenge.</p>
-            )}
-          </NetworkGuard>
+        {/* Fraud challenge — collapsible advanced section */}
+        <div className="card">
+          <button
+            type="button"
+            onClick={() => setShowChallenge((v) => !v)}
+            className="flex w-full items-center justify-between px-5 py-3 text-sm text-muted transition hover:text-foreground"
+            aria-expanded={showChallenge}
+          >
+            <span className="flex items-center gap-2">
+              <AlertIcon className="text-base text-danger" aria-hidden />
+              Advanced: Fraud challenge
+            </span>
+            <span className="text-xs text-muted-foreground">{showChallenge ? "Hide" : "Show"}</span>
+          </button>
+          {showChallenge && (
+            <div className="border-t border-line px-5 py-4">
+              <p className="mb-3 text-xs text-muted-foreground">
+                If the exchange signed two different balances for you, prove it
+                on-chain — revealing only a 1-bit &ldquo;they differ&rdquo; flag.
+              </p>
+              <NetworkGuard>
+                {isConnected ? (
+                  <ChallengeForm epochId={epochId} deadline={deadline} token={epochToken ?? "0x0000000000000000000000000000000000000000"} />
+                ) : (
+                  <p className="text-sm text-muted">Connect your wallet to file a challenge.</p>
+                )}
+              </NetworkGuard>
+            </div>
+          )}
         </div>
       </div>
     </Shell>

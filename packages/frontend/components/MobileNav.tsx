@@ -8,7 +8,6 @@ import { MenuIcon, XIcon } from "./icons";
 
 const links = [
   { href: "/", label: "Overview" },
-  { href: "/judges", label: "For Judges" },
   { href: "/onboard", label: "Onboard" },
   { href: "/exchange", label: "Exchange" },
   { href: "/customer", label: "Customer" },

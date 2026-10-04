@@ -54,7 +54,7 @@ const config: Config = {
       },
       fontSize: {
         // Bigger display jumps for a confident hierarchy.
-        "hero": ["clamp(2.5rem, 6vw, 4.5rem)", { lineHeight: "1.05", letterSpacing: "-0.02em" }],
+        "hero": ["clamp(2rem, 4vw, 3rem)", { lineHeight: "1.1", letterSpacing: "-0.02em" }],
       },
       boxShadow: {
         // Soft accent glows for key data / hover states.

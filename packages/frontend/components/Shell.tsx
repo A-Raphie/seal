@@ -5,10 +5,10 @@ import { usePathname } from "next/navigation";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
 import { MobileNav } from "./MobileNav";
 import { Logo } from "./icons";
+import { FACTORY_ADDRESS, PROOF_OF_RESERVES_ADDRESS, AUDITOR_CREDENTIAL_ADDRESS } from "@/lib/contract";
 
 const links = [
   { href: "/", label: "Overview" },
-  { href: "/judges", label: "For Judges" },
   { href: "/onboard", label: "Onboard" },
   { href: "/exchange", label: "Exchange" },
   { href: "/customer", label: "Customer" },
@@ -38,7 +38,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
                 key={l.href}
                 href={l.href}
                 aria-current={active ? "page" : undefined}
-                className={`relative rounded-lg px-3 py-1.5 text-sm transition ${
+                className={`relative rounded-lg px-3 py-1.5 text-xs transition ${
                   active ? "text-foreground" : "text-muted hover:text-foreground"
                 }`}
               >
@@ -84,7 +84,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
           {/* Live contracts row */}
           <div className="mb-4 flex flex-wrap items-center justify-center gap-x-4 gap-y-2 text-[11px] text-muted">
             <a
-              href="https://sepolia.etherscan.io/address/0x95fd86974bbbDBf7a69c5b269f17Eb1a0BdA0690"
+              href={`https://sepolia.etherscan.io/address/${FACTORY_ADDRESS}`}
               target="_blank"
               rel="noreferrer"
               className="font-mono transition hover:text-foreground"
@@ -92,7 +92,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
               Factory
             </a>
             <a
-              href="https://sepolia.etherscan.io/address/0x9182cEF09299906bDb9Af5bD705135d06675018F"
+              href={`https://sepolia.etherscan.io/address/${PROOF_OF_RESERVES_ADDRESS}`}
               target="_blank"
               rel="noreferrer"
               className="font-mono transition hover:text-foreground"
@@ -100,7 +100,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
               PoR
             </a>
             <a
-              href="https://sepolia.etherscan.io/address/0x56e66a35925aEf86D48C85D9222A1cD6dDa3B25b"
+              href={`https://sepolia.etherscan.io/address/${AUDITOR_CREDENTIAL_ADDRESS}`}
               target="_blank"
               rel="noreferrer"
               className="font-mono transition hover:text-foreground"

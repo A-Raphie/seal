@@ -76,7 +76,7 @@ export default function OnboardPage() {
   return (
     <Shell>
       <header className="mb-6">
-        <h1 className="text-3xl font-bold">Onboard an exchange</h1>
+        <h1 className="text-4xl font-bold">Onboard an exchange</h1>
         <p className="mt-1.5 max-w-2xl text-muted">
           Register a new exchange to get its own isolated{" "}
           <code className="font-mono text-xs text-muted-foreground">
@@ -185,7 +185,7 @@ export default function OnboardPage() {
                 const exPor = ex.por;
                 const exCred = ex.auditorCredential;
                 return (
-                  <li key={i} className="rounded-lg border border-line bg-black/20 p-3">
+                  <li key={i} className="card">
                     <div className="flex items-center justify-between">
                       <span className="font-display font-semibold">Exchange #{i}</span>
                       <span className="badge border-accent/30 bg-accent/10 text-accent">

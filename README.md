@@ -10,12 +10,66 @@ Built for the [Zama Developer Program — Mainnet Season 3, Builder Track](https
 
 ## Demo
 
-- **Live site:** _TODO — Vercel URL_
+- **Live site:** [useseal.vercel.app](https://useseal.vercel.app/)
 - **3-min pitch:** _TODO — video URL (real-person pitch, no AI voice)_
 - **X thread:** _TODO_
 - **ProofOfReservesFactory (Sepolia):** [0x95fd86974bbbDBf7a69c5b269f17Eb1a0BdA0690](https://sepolia.etherscan.io/address/0x95fd86974bbbDBf7a69c5b269f17Eb1a0BdA0690)
 - **Exchange #0 — ProofOfReserves (Sepolia):** [0x9182cEF09299906bDb9Af5bD705135d06675018F](https://sepolia.etherscan.io/address/0x9182cEF09299906bDb9Af5bD705135d06675018F) *(registered via the factory, cUSDC-denominated)*
 - **Exchange #0 — AuditorCredential (Sepolia):** [0x56e66a35925aEf86D48C85D9222A1cD6dDa3B25b](https://sepolia.etherscan.io/address/0x56e66a35925aEf86D48C85D9222A1cD6dDa3B25b)
+
+---
+
+## For Judges
+
+A guided walkthrough — what Seal does, why FHE matters here, and how to verify every claim on-chain. No wallet needed to read this section.
+
+### What is Seal?
+
+Seal is a **confidential Proof-of-Reserves protocol** on the Zama Protocol. It lets crypto exchanges prove they are solvent (assets ≥ liabilities) without revealing any individual customer balance.
+
+Every customer balance is encrypted *client-side* before submission. The contract sums ciphertexts **homomorphically** — no plaintext is ever touched. Only two things are ever decrypted: a **1-bit solvency verdict** (public) and the **aggregate reserve total** (auditor-gated via soulbound ERC-721 credential).
+
+### Why FHE?
+
+| Without FHE | With FHE (Seal) |
+|-------------|-----------------|
+| ❌ Customer balances visible to the contract operator | ✅ Balances encrypted client-side, never decryptable by anyone |
+| ❌ Reserves can be inflated with fake accounts | ✅ Reserve total computed under encryption — no inflation possible |
+| ❌ Privacy requires trusting a central party | ✅ Only the 1-bit verdict is public — zero privacy leakage |
+
+### The ACL guarantee
+
+| Ciphertext | ACL | Why |
+|------------|-----|-----|
+| customer balance | `allowThis` only | Contract can FHE.add it. Nobody else can read it — ever. |
+| encryptedTotal | `allowPublic` after deadline | Only after the attestation window closes. Auditors decrypt the real number. |
+| encryptedSolvent | `allowPublic` after deadline | 1-bit verdict. Anyone can read it. Public good. |
+
+### How to verify on-chain
+
+1. **Deployed contracts** — Three verified contracts on Sepolia:
+   - [Factory](https://sepolia.etherscan.io/address/0x95fd86974bbbDBf7a69c5b269f17Eb1a0BdA0690)
+   - [ProofOfReserves (Exchange #0)](https://sepolia.etherscan.io/address/0x9182cEF09299906bDb9Af5bD705135d06675018F)
+   - [AuditorCredential](https://sepolia.etherscan.io/address/0x56e66a35925aEf86D48C85D9222A1cD6dDa3B25b)
+
+2. **Check the test suite** — 35 tests covering every path: deployment, access control, token denomination, happy path, insolvent case, composable-privacy gate, fraud challenge, multi-epoch, cross-copy hash sync.
+
+3. **Read the ACL audit** — The [Why FHE?](#why-fhe--verifiedagainst-the-acl-graph) section contains a full ACL audit table mapping every claim to lines of code in `ProofOfReserves.sol`.
+
+### The end-to-end flow
+
+1. **Exchange signs attestation** — Off-chain, EIP-191. Binds `(epochId, token, customer, ciphertext, deadline)`.
+2. **Customer encrypts balance** — Client-side FHE encryption. Balance never leaves the browser as plaintext.
+3. **Contract sums ciphertexts** — `FHE.add` accumulates encrypted balances. No decryption at any point.
+4. **1-bit verdict goes public** — After the deadline, `FHE.ge(total, liabilities)` → true/false. Anyone can read.
+5. **Auditor decrypts total** — Soulbound ERC-721 credential holder decrypts the aggregate reserve number.
+
+### Key design decisions
+
+- **No operator in the trust path.** The contract computes the public result. There is no `onlyOwner` function that accepts plaintext derived from server-side decryption.
+- **Fraud challenges via FHE.ne.** A customer can prove the exchange signed conflicting attestations — revealing only a 1-bit "they differ" flag. Neither balance leaks.
+- **Auditor-gated aggregate total.** The reserve number is commercially sensitive. Only a soulbound ERC-721 credential holder can decrypt it. Revoke = instant loss of access.
+- **Token denomination with 3-copy hash sync.** Attestations bind to a specific token (cUSDC, cUSDT, etc.). A cUSDC attestation cannot be replayed as cUSDT. Frontend, CLI, and contract hash functions are kept in sync via a cross-copy test.
 
 ---
 

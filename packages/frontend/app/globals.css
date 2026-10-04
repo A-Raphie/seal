@@ -78,7 +78,7 @@ h3 {
 
   /* Floating glass nav pill (winsznx pattern). */
   .nav-pill {
-    @apply fixed left-4 right-4 top-4 z-50 mx-auto flex max-w-5xl items-center justify-between rounded-2xl border border-line bg-bg/70 px-4 py-2.5 backdrop-blur-xl;
+    @apply fixed left-4 right-4 top-4 z-50 mx-auto flex max-w-5xl items-center justify-between rounded-2xl border border-line bg-bg/70 px-3.5 py-2 backdrop-blur-xl;
     box-shadow: 0 8px 32px -12px rgba(0, 0, 0, 0.5);
   }
 
@@ -174,11 +174,11 @@ h3 {
   /* Giant footer wordmark at low opacity with a vertical fade mask. */
   .footer-wordmark {
     font-family: var(--font-display);
-    font-size: 28vw;
+    font-size: 24vw;
     font-weight: 700;
     line-height: 0.8;
     letter-spacing: -0.04em;
-    opacity: 0.03;
+    opacity: 0.02;
     text-align: center;
     pointer-events: none;
     user-select: none;

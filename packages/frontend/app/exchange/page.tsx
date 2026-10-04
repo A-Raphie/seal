@@ -110,7 +110,7 @@ export default function ExchangePage() {
   return (
     <Shell>
       <header className="mb-8">
-        <h1 className="text-3xl font-bold">Exchange back-office</h1>
+        <h1 className="text-4xl font-bold">Exchange back-office</h1>
         <p className="mt-1.5 text-muted">
           Open an attestation epoch, publish the liabilities claim, and accredit
           auditors.
@@ -119,126 +119,117 @@ export default function ExchangePage() {
 
       {IS_UNDEPLOYED && <UndeployedBanner />}
 
-      <div className="grid gap-5 lg:grid-cols-2">
-        {/* Contract state — stat grid */}
-        <div className="card">
-          <h2 className="mb-4 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-            Contract state
-          </h2>
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <div className="stat-label">Next epoch</div>
-              <div className="stat">{nextEpochId !== undefined ? nextEpochId.toString() : <span className="skeleton-stat" aria-label="Loading" />}</div>
-            </div>
-            <div>
-              <div className="stat-label">Your role</div>
-              <div className="mt-1">
-                {isAdmin ? (
-                  <span className="badge border-success/30 bg-success/10 text-success">
-                    <CheckIcon aria-hidden /> admin
-                  </span>
-                ) : (
-                  <span className="badge border-line text-muted-foreground">
-                    read-only
-                  </span>
+      {/* Contract state — compact full-width bar */}
+      <div className="card mb-5 flex flex-wrap items-center gap-6">
+        <div>
+          <div className="stat-label">Next epoch</div>
+          <div className="stat text-xl">{nextEpochId !== undefined ? nextEpochId.toString() : <span className="skeleton-stat" aria-label="Loading" />}</div>
+        </div>
+        <div className="h-8 w-px bg-line" aria-hidden />
+        <div>
+          <div className="stat-label">Your role</div>
+          <div className="mt-1">
+            {isAdmin ? (
+              <span className="badge border-success/30 bg-success/10 text-success">
+                <CheckIcon aria-hidden /> admin
+              </span>
+            ) : (
+              <span className="badge border-line text-muted-foreground">
+                read-only
+              </span>
+            )}
+          </div>
+        </div>
+        <div className="h-8 w-px bg-line" aria-hidden />
+        <div className="min-w-0">
+          <div className="stat-label">Contract</div>
+          <div className="font-mono text-xs"><TxLink value={PROOF_OF_RESERVES_ADDRESS} type="address" /></div>
+        </div>
+        <div className="h-8 w-px bg-line" aria-hidden />
+        <div className="min-w-0">
+          <div className="stat-label">Admin</div>
+          <div className="font-mono text-xs">{admin ? <TxLink value={admin} type="address" /> : "—"}</div>
+        </div>
+        <div className="h-8 w-px bg-line" aria-hidden />
+        <div className="min-w-0">
+          <div className="stat-label">Signer</div>
+          <div className="font-mono text-xs">{signer ? <TxLink value={signer} type="address" /> : "—"}</div>
+        </div>
+      </div>
+
+      {/* Open new epoch */}
+      <div className="card">
+        <h2 className="mb-4 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+          Open new epoch
+        </h2>
+        <NetworkGuard>
+          {!isConnected ? (
+            <p className="text-sm text-muted">Connect your wallet first.</p>
+          ) : !isAdmin ? (
+            <p className="text-sm text-warning">
+              Only the exchange admin can create epochs. Connect the admin
+              wallet (the one set at deployment).
+            </p>
+          ) : (
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              <div>
+                <label className="label" htmlFor={tokenId}>
+                  Token
+                </label>
+                <select
+                  id={tokenId}
+                  className="input"
+                  value={token.address}
+                  onChange={(e) => {
+                    const found = SEPOLIA_TOKENS.find((t) => t.address === e.target.value);
+                    if (found) setToken(found);
+                  }}
+                >
+                  {SEPOLIA_TOKENS.map((t) => (
+                    <option key={t.address} value={t.address}>
+                      {t.symbol}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="label" htmlFor={liabId}>
+                  Liabilities
+                </label>
+                <input
+                  id={liabId}
+                  className="input font-mono"
+                  type="text"
+                  inputMode="decimal"
+                  placeholder="1000000"
+                  value={liabilities}
+                  onChange={(e) => setLiabilities(e.target.value)}
+                  aria-invalid={liabilities.length > 0 && !liabValid}
+                  aria-describedby={liabilities.length > 0 && !liabValid ? "liab-err" : undefined}
+                />
+                {liabilities.length > 0 && !liabValid && (
+                  <p id="liab-err" className="mt-1.5 text-xs text-danger">
+                    Whole non-negative number.
+                  </p>
                 )}
               </div>
-            </div>
-          </div>
-          <dl className="mt-5 space-y-2.5 border-t border-line pt-4 text-sm">
-            <div className="flex justify-between gap-2">
-              <dt className="text-muted">Contract</dt>
-              <dd className="font-mono text-xs">
-                <TxLink value={PROOF_OF_RESERVES_ADDRESS} type="address" />
-              </dd>
-            </div>
-            <div className="flex justify-between gap-2">
-              <dt className="text-muted">Exchange admin</dt>
-              <dd className="font-mono text-xs">
-                {admin ? <TxLink value={admin} type="address" /> : "—"}
-              </dd>
-            </div>
-            <div className="flex justify-between gap-2">
-              <dt className="text-muted">Exchange signer</dt>
-              <dd className="font-mono text-xs">
-                {signer ? <TxLink value={signer} type="address" /> : "—"}
-              </dd>
-            </div>
-          </dl>
-        </div>
-
-        {/* Open new epoch */}
-        <div className="card">
-          <h2 className="mb-4 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-            Open new epoch
-          </h2>
-          <NetworkGuard>
-            {!isConnected ? (
-              <p className="text-sm text-muted">Connect your wallet first.</p>
-            ) : !isAdmin ? (
-              <p className="text-sm text-warning">
-                Only the exchange admin can create epochs. Connect the admin
-                wallet (the one set at deployment).
-              </p>
-            ) : (
-              <div className="space-y-4">
-                <div>
-                  <label className="label" htmlFor={tokenId}>
-                    Reserve token (confidential)
-                  </label>
-                  <select
-                    id={tokenId}
-                    className="input"
-                    value={token.address}
-                    onChange={(e) => {
-                      const found = SEPOLIA_TOKENS.find((t) => t.address === e.target.value);
-                      if (found) setToken(found);
-                    }}
-                  >
-                    {SEPOLIA_TOKENS.map((t) => (
-                      <option key={t.address} value={t.address}>
-                        {t.symbol} ({t.decimals} decimals)
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label className="label" htmlFor={liabId}>
-                    Claimed liabilities ({token.symbol})
-                  </label>
-                  <input
-                    id={liabId}
-                    className="input font-mono"
-                    type="text"
-                    inputMode="decimal"
-                    placeholder="e.g. 1000000"
-                    value={liabilities}
-                    onChange={(e) => setLiabilities(e.target.value)}
-                    aria-invalid={liabilities.length > 0 && !liabValid}
-                    aria-describedby={liabilities.length > 0 && !liabValid ? "liab-err" : undefined}
-                  />
-                  {liabilities.length > 0 && !liabValid && (
-                    <p id="liab-err" className="mt-1.5 text-xs text-danger">
-                      Enter a whole, non-negative number.
-                    </p>
-                  )}
-                </div>
-                <div>
-                  <label className="label" htmlFor={windowId}>
-                    Attestation window
-                  </label>
-                  <select
-                    id={windowId}
-                    className="input"
-                    value={windowHours}
-                    onChange={(e) => setWindowHours(e.target.value)}
-                  >
-                    <option value="1">1 hour</option>
-                    <option value="6">6 hours</option>
-                    <option value="24">24 hours</option>
-                    <option value="168">7 days</option>
-                  </select>
-                </div>
+              <div>
+                <label className="label" htmlFor={windowId}>
+                  Window
+                </label>
+                <select
+                  id={windowId}
+                  className="input"
+                  value={windowHours}
+                  onChange={(e) => setWindowHours(e.target.value)}
+                >
+                  <option value="1">1 hour</option>
+                  <option value="6">6 hours</option>
+                  <option value="24">24 hours</option>
+                  <option value="168">7 days</option>
+                </select>
+              </div>
+              <div className="flex items-end">
                 <button
                   className="btn-primary w-full"
                   disabled={!canSubmit}
@@ -246,17 +237,17 @@ export default function ExchangePage() {
                 >
                   {isPending ? "Opening…" : "Open epoch"}
                 </button>
-                {txHash && (
-                  <p className="text-xs text-success" aria-live="polite">
-                    Epoch opened: <TxLink value={txHash} type="tx" /> — see the
-                    Auditor tab.
-                  </p>
-                )}
-                <ErrorText error={error} />
               </div>
-            )}
-          </NetworkGuard>
-        </div>
+            </div>
+          )}
+        </NetworkGuard>
+        {txHash && (
+          <p className="mt-3 text-xs text-success" aria-live="polite">
+            Epoch opened: <TxLink value={txHash} type="tx" /> — see the
+            Auditor tab.
+          </p>
+        )}
+        <ErrorText error={error} />
       </div>
 
       {/* Composable-privacy registrar — violet-glow accent card */}

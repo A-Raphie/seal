@@ -39,7 +39,7 @@ export default function Home() {
           <span className="h-1.5 w-1.5 rounded-full bg-accent" aria-hidden />
           Composable Privacy · Zama Season 3
         </div>
-        <h1 className="text-hero font-bold">
+        <h1 className="max-w-3xl text-hero font-bold">
           A confidential Proof-of-Reserves protocol.
           <br />
           Balances stay encrypted.
@@ -63,24 +63,22 @@ export default function Home() {
         </div>
       </Reveal>
 
-      {/* ── Live on Sepolia: proof of real deployment ── */}
-      <Reveal delay={50}>
-        <LiveSepoliaSection />
-      </Reveal>
-
-      {/* ── Code snippet: shows it's infrastructure ── */}
-      <Reveal delay={100}>
-        <CodeSnippetSection />
-      </Reveal>
-
       {/* ── The product: a live verdict board ── */}
-      <Reveal delay={150}>
+      <Reveal delay={50}>
         <VerdictBoard />
       </Reveal>
 
+      {/* ── Deployment proof + integration snippet side-by-side ── */}
+      <Reveal delay={100}>
+        <div className="mt-14 grid gap-5 lg:grid-cols-2">
+          <LiveSepoliaSection />
+          <CodeSnippetSection />
+        </div>
+      </Reveal>
+
       {/* ── Bento grid: how it works (asymmetric, animated widget) ── */}
-      <Reveal delay={200}>
-        <section className="mt-20" aria-label="How it works">
+      <Reveal delay={150}>
+        <section className="mt-14" aria-label="How it works">
           <h2 className="mb-5 text-sm font-semibold uppercase tracking-[0.2em] text-muted-foreground">
             How it works
           </h2>
@@ -155,11 +153,11 @@ function LiveSepoliaSection() {
   ];
 
   return (
-    <section className="mt-12" aria-label="Live on Sepolia">
-      <h2 className="mb-5 text-sm font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+    <section aria-label="Live on Sepolia">
+      <h2 className="mb-4 text-sm font-semibold uppercase tracking-[0.2em] text-muted-foreground">
         Live on Sepolia
       </h2>
-      <div className="grid gap-3 sm:grid-cols-3">
+      <div className="grid gap-3">
         {contracts.map((c) => (
           <a
             key={c.address}
@@ -227,8 +225,8 @@ function CodeSnippetSection() {
   ];
 
   return (
-    <section className="mt-12" aria-label="Integration">
-      <h2 className="mb-5 text-sm font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+    <section aria-label="Integration">
+      <h2 className="mb-4 text-sm font-semibold uppercase tracking-[0.2em] text-muted-foreground">
         Integration
       </h2>
       <div className="card overflow-hidden">
@@ -437,7 +435,12 @@ function VerdictBoard() {
         </span>
       </div>
 
-      {rows.length === 0 ? (
+      {countLoading ? (
+        <div className="space-y-3">
+          <div className="skeleton-row" />
+          <div className="skeleton-row" />
+        </div>
+      ) : rows.length === 0 ? (
         <div className="card text-center">
           <p className="text-sm text-muted">No exchanges with epochs yet.</p>
           <Link href="/onboard" className="btn-primary mt-3">
